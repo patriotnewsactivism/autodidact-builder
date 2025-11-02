@@ -1,0 +1,27 @@
+*** Begin Patch
+*** Update File: vite.config.ts
+@@
+-import { componentTagger } from "lovable-tagger";
++// NOTE: The `lovable-tagger` plugin integrates with a Chrome extension to annotate React components.
++// In the browser environment used by this project the companion extension files (e.g.
++// utils.js, extensionState.js and heuristicsRedefinitions.js) are not present, causing 404
++// errors and a "ReferenceError: Cannot access 'ht' before initialization" during runtime.
++// To prevent these runtime crashes we remove the plugin entirely. If you need the tagger
++// functionality locally, install the extension and reintroduce the plugin here.
++// import { componentTagger } from "lovable-tagger";
+@@ export default defineConfig(({ mode }) => ({
+-  plugins: [react(), mode === "development" && componentTagger()].filter(Boolean),
++  // Removed `componentTagger` plugin to avoid runtime errors caused by missing
++  // companion extension scripts. See the comment above for details.
++  plugins: [react()],
+*** End Patch
+
+*** Begin Patch
+*** Update File: package.json
+@@ "devDependencies": {
+-    "globals": "^15.15.0",
+-    "lovable-tagger": "^1.1.11",
+-    "postcss": "^8.5.6",
++    "globals": "^15.15.0",
++    "postcss": "^8.5.6",
+*** End Patch
