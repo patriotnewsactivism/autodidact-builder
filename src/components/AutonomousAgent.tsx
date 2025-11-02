@@ -35,7 +35,7 @@ import {
   X,
 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
-import { useAuth } from '@/hooks/useAuth';
+import { useAuth } from '@/auth/AuthProvider';
 import { useAgentData } from '@/hooks/useAgentData';
 
 const GITHUB_API_URL = 'https://api.github.com';

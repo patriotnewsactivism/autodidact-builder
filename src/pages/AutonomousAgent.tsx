@@ -1,6 +1,6 @@
 import { AutonomousAgent } from '@/components/AutonomousAgent';
 import { Auth } from '@/components/Auth';
-import { useAuth } from '@/hooks/useAuth';
+import { useAuth } from '@/auth/AuthProvider';
 
 const AutonomousAgentPage = () => {
   const { user, loading } = useAuth();

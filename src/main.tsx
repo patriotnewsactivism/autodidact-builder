@@ -1,5 +1,5 @@
-// FILE: src/main.tsx  (ensure CSS import is first)
 import './index.css';
+// FILE: src/main.tsx  (ensure CSS import is first)
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
