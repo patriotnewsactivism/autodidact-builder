@@ -1,0 +1,26 @@
+*** Begin Patch
+*** Update File: src/components/AutonomousAgent.tsx
+@@ export const AutonomousAgent: React.FC = () => {
+-  const [agents, setAgents] = useState<AgentDescriptor[]>(() => {
+-    const initialId = generateId();
+-    return [{ id: initialId, name: 'Agent 1' }];
+-  });
+-  const [activeAgentId, setActiveAgentId] = useState(() => {
+-    const initialId = agents[0]?.id ?? '';
+-    return initialId;
+-  });
++  // Generate a single stable initial agent ID.  Without this indirection the
++  // previous implementation referenced the `agents` variable inside the
++  // initializer for `activeAgentId`, which triggers a temporal dead zone in
++  // JavaScript modules – the variable isn't initialised until after
++  // destructuring completes.  When the second `useState` ran it tried to read
++  // `agents[0]` before `agents` existed, resulting in a runtime error like
++  // “Cannot access uninitialized variable.”
++  //
++  // We avoid that by deriving the ID once via `useMemo` and passing it to
++  // both state initialisers.  The memo hook ensures the value only changes
++  // once for the lifetime of the component.
++  const initialAgentId = useMemo(() => generateId(), []);
++  const [agents, setAgents] = useState<AgentDescriptor[]>(() => [{ id: initialAgentId, name: 'Agent 1' }]);
++  const [activeAgentId, setActiveAgentId] = useState<string>(() => initialAgentId);
+*** End Patch
