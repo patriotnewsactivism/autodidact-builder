@@ -7,7 +7,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Brain, Sparkles } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
-import { AuthApiError, AuthError } from '@supabase/supabase-js';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { useAuth } from '@/auth/AuthProvider';
+import { MISCONFIGURED_AUTH_MESSAGE, normaliseAuthError } from '@/auth/auth-errors';
 
 export const Auth = () => {
   const [email, setEmail] = useState('');
@@ -16,24 +18,9 @@ export const Auth = () => {
   const [signUpLoading, setSignUpLoading] = useState(false);
   const [formErrors, setFormErrors] = useState<{ signin?: string; signup?: string }>({});
   const { toast } = useToast();
+  const { error: authErrorFromContext } = useAuth();
 
-  const normaliseErrorMessage = useCallback((error: unknown) => {
-    if (error instanceof AuthApiError || error instanceof AuthError) {
-      if (error.status === 400 && /uninitialized variable/i.test(error.message)) {
-        return 'Authentication service is misconfigured. Please try again later or contact support.';
-      }
-      return error.message;
-    }
-
-    if (error instanceof Error) {
-      if (/uninitialized variable/i.test(error.message)) {
-        return 'Authentication service is misconfigured. Please try again later or contact support.';
-      }
-      return error.message;
-    }
-
-    return 'Unexpected authentication error';
-  }, []);
+  const normaliseErrorMessage = useCallback((error: unknown) => normaliseAuthError(error), []);
 
   const handleAuthError = useCallback(
     (scope: 'signin' | 'signup', error: unknown) => {
@@ -104,7 +91,22 @@ export const Auth = () => {
     }
   };
 
-  const disableAuthInputs = useMemo(() => signInLoading || signUpLoading, [signInLoading, signUpLoading]);
+  const disableAuthInputs = useMemo(
+    () => signInLoading || signUpLoading || Boolean(authErrorFromContext?.misconfigured),
+    [signInLoading, signUpLoading, authErrorFromContext]
+  );
+
+  const authErrorMessage = useMemo(() => {
+    if (!authErrorFromContext) {
+      return null;
+    }
+
+    if (authErrorFromContext.misconfigured) {
+      return MISCONFIGURED_AUTH_MESSAGE;
+    }
+
+    return authErrorFromContext.message;
+  }, [authErrorFromContext]);
 
   return (
     <div className="min-h-screen flex items-center justify-center p-6 bg-background">
@@ -121,6 +123,13 @@ export const Auth = () => {
             <p className="text-sm text-muted-foreground">Self-Learning Development System</p>
           </div>
         </div>
+
+        {authErrorMessage && (
+          <Alert variant="destructive" className="mb-6">
+            <AlertTitle>Authentication unavailable</AlertTitle>
+            <AlertDescription>{authErrorMessage}</AlertDescription>
+          </Alert>
+        )}
 
         <Tabs defaultValue="signin" className="w-full">
           <TabsList className="grid w-full grid-cols-2 glass">
@@ -159,7 +168,7 @@ export const Auth = () => {
               <Button
                 type="submit"
                 className="w-full bg-primary hover:bg-primary/90 glow-strong"
-                disabled={signInLoading}
+                disabled={disableAuthInputs}
               >
                 {signInLoading ? 'Signing in...' : 'Sign In'}
               </Button>
@@ -202,7 +211,7 @@ export const Auth = () => {
               <Button
                 type="submit"
                 className="w-full bg-primary hover:bg-primary/90 glow-strong"
-                disabled={signUpLoading}
+                disabled={disableAuthInputs}
               >
                 {signUpLoading ? 'Creating account...' : 'Sign Up'}
               </Button>
