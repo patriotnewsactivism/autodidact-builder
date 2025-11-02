@@ -15,6 +15,7 @@ import {
   AlertCircle,
   ArrowLeft,
   Bot,
+  Brain,
   CheckCircle,
   Clock,
   ExternalLink,
@@ -23,12 +24,14 @@ import {
   Folder,
   GitBranch,
   GitCommit,
+  GitPullRequest,
   Link2,
   Loader2,
   Plus,
   RefreshCw,
   Save,
   Sigma,
+  Sparkles,
   X,
 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
@@ -140,6 +143,14 @@ interface AgentGeneratedChange {
   stepTitle?: string;
 }
 
+interface AutoApplyResult {
+  status: 'success' | 'failed' | 'skipped';
+  message: string;
+  commitSha?: string;
+  commitUrl?: string;
+  filesCommitted?: number;
+}
+
 interface AgentTaskRecord {
   id: string;
   instruction: string;
@@ -171,7 +182,10 @@ interface AgentTaskRecord {
     generatedChanges?: AgentGeneratedChange[];
     stats?: {
       linesChanged?: number;
+      stepsExecuted?: number;
+      changesProposed?: number;
     };
+    autoApplyResult?: AutoApplyResult | null;
   };
   startedAt?: Date | null;
   completedAt?: Date | null;
@@ -181,6 +195,32 @@ interface AgentTaskRecord {
 const formatDate = (value: string | Date) => {
   const date = value instanceof Date ? value : new Date(value);
   return date.toLocaleString();
+};
+
+const summariseKnowledgeContent = (value: string | null) => {
+  if (!value) return '';
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (parsed.summary && typeof parsed.summary === 'string') {
+      return parsed.summary;
+    }
+    if (parsed.changes && Array.isArray(parsed.changes)) {
+      const change = parsed.changes[0];
+      if (change?.description) {
+        return String(change.description);
+      }
+    }
+  } catch (_error) {
+    // Fall back to raw string when JSON parsing fails.
+  }
+
+  if (trimmed.length > 220) {
+    return `${trimmed.slice(0, 220)}…`;
+  }
+  return trimmed;
 };
 
 const encodeContent = (value: string) => {
@@ -268,6 +308,7 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
     tasks,
     executeTask,
     isExecutingTask,
+    knowledgeNodes,
   } = useAgentData(user?.id);
   const [workspaceFiles, setWorkspaceFiles] = useState<Record<string, SelectedFile>>({});
   const [pendingDeletions, setPendingDeletions] = useState<string[]>([]);
@@ -1581,6 +1622,15 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
                         ? 'destructive'
                         : 'secondary';
                     const changes = (task.metadata.generatedChanges ?? []) as AgentGeneratedChange[];
+                    const summaryStats = task.metadata.stats ?? {};
+                    const autoApply = task.metadata.autoApplyResult ?? null;
+                    const autoApplyVariant: 'default' | 'secondary' | 'destructive' =
+                      autoApply?.status === 'success'
+                        ? 'default'
+                        : autoApply?.status === 'failed'
+                        ? 'destructive'
+                        : 'secondary';
+
                     return (
                       <div key={task.id} className="space-y-3 rounded-lg border border-border/60 p-4">
                         <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
@@ -1588,9 +1638,9 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
                             <p className="font-semibold">{task.instruction}</p>
                             <p className="text-xs text-muted-foreground">
                               {task.createdAt ? formatDate(task.createdAt) : ''}
-                              {task.metadata.stats?.linesChanged !== undefined && (
+                              {summaryStats.linesChanged !== undefined && (
                                 <span className="ml-2">
-                                  - {task.metadata.stats.linesChanged?.toLocaleString()} lines suggested
+                                  • {summaryStats.linesChanged?.toLocaleString()} lines suggested
                                 </span>
                               )}
                             </p>
@@ -1600,6 +1650,33 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
 
                         {task.result && (
                           <p className="rounded-md bg-muted/40 p-3 text-sm text-muted-foreground">{task.result}</p>
+                        )}
+
+                        {(
+                          summaryStats.stepsExecuted !== undefined ||
+                          summaryStats.changesProposed !== undefined ||
+                          summaryStats.linesChanged !== undefined
+                        ) && (
+                          <div className="grid gap-2 rounded-md border border-dashed border-border/60 p-3 text-xs text-muted-foreground sm:grid-cols-3">
+                            {summaryStats.stepsExecuted !== undefined && (
+                              <div>
+                                <p className="font-medium">Steps completed</p>
+                                <p>{summaryStats.stepsExecuted}</p>
+                              </div>
+                            )}
+                            {summaryStats.changesProposed !== undefined && (
+                              <div>
+                                <p className="font-medium">Files proposed</p>
+                                <p>{summaryStats.changesProposed}</p>
+                              </div>
+                            )}
+                            {summaryStats.linesChanged !== undefined && (
+                              <div>
+                                <p className="font-medium">Line delta</p>
+                                <p>{summaryStats.linesChanged?.toLocaleString()}</p>
+                              </div>
+                            )}
+                          </div>
                         )}
 
                         {changes.length > 0 ? (
@@ -1634,9 +1711,33 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
                             ))}
                           </div>
                         ) : (
-                          <p className="text-xs text-muted-foreground">
-                            No code suggestions produced for this task.
-                          </p>
+                            <p className="text-xs text-muted-foreground">
+                              No code suggestions produced for this task.
+                            </p>
+                        )}
+
+                        {autoApply && (
+                          <div className="flex flex-col gap-2 rounded-md border border-border/60 p-3 text-xs">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <span className="inline-flex items-center gap-2 font-medium">
+                                <GitPullRequest className="h-4 w-4 text-primary" />
+                                Auto-apply {autoApply.status === 'success' ? 'committed' : autoApply.status === 'failed' ? 'failed' : 'skipped'}
+                              </span>
+                              <Badge variant={autoApplyVariant}>{autoApply.status}</Badge>
+                            </div>
+                            <p className="text-muted-foreground">{autoApply.message}</p>
+                            {autoApply.commitUrl && (
+                              <a
+                                href={autoApply.commitUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="inline-flex items-center gap-1 text-primary hover:underline"
+                              >
+                                View commit
+                                <ExternalLink className="h-3 w-3" />
+                              </a>
+                            )}
+                          </div>
                         )}
 
                         {task.errorMessage && (
@@ -1732,6 +1833,43 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
                       <span className="text-xs text-muted-foreground">{formatDate(activity.timestamp)}</span>
                     </div>
                     <Badge variant="outline">{activity.status}</Badge>
+                  </div>
+                ))
+              )}
+            </div>
+          </Card>
+
+          <Card className="p-6">
+            <div className="flex items-center gap-2">
+              <Brain className="h-5 w-5 text-primary" />
+              <h2 className="text-lg font-semibold">Knowledge vault</h2>
+            </div>
+
+            <div className="mt-4 space-y-3">
+              {knowledgeNodes.length === 0 ? (
+                <div className="flex h-[160px] items-center justify-center text-center text-sm text-muted-foreground">
+                  Insights from completed agent runs will appear here, helping the system learn from every change.
+                </div>
+              ) : (
+                knowledgeNodes.map((node) => (
+                  <div key={node.id} className="space-y-2 rounded-md border border-border/60 p-3 text-sm">
+                    <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                      <p className="font-medium">{node.title}</p>
+                      <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                        <span>{formatDate(node.createdAt)}</span>
+                        {typeof node.confidenceScore === 'number' && (
+                          <Badge variant="outline" className="inline-flex items-center gap-1">
+                            <Sparkles className="h-3 w-3" /> {Math.round(node.confidenceScore)}%
+                          </Badge>
+                        )}
+                      </div>
+                    </div>
+                    <p className="text-xs text-muted-foreground">{summariseKnowledgeContent(node.content)}</p>
+                    {node.category && (
+                      <Badge variant="secondary" className="w-fit text-[10px] uppercase tracking-wide">
+                        {node.category}
+                      </Badge>
+                    )}
                   </div>
                 ))
               )}

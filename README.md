@@ -79,9 +79,18 @@ This project is built with:
    - Open any files you want the agent to consider; tick them in the “Context files” list before launching an instruction.  
    - The agent streams its plan, proposed changes, and line counts into Supabase tables so the activity feed and knowledge base persist between sessions.
 
-4. **Two-way GitHub sync**  
-   - Use `Commit changes` for single-file saves or `Commit workspace` to bundle multi-file updates and deletions into one tree commit through the Git data API.  
+4. **Two-way GitHub sync**
+   - Use `Commit changes` for single-file saves or `Commit workspace` to bundle multi-file updates and deletions into one tree commit through the Git data API.
    - The workspace tracks dirty files, staged deletions, committed paths, and total line deltas for telemetry and reporting.
+
+### Auto-apply commits & knowledge capture
+
+- Tick **"Auto apply generated code"** when dispatching an instruction to let AutoDidact push the proposed changes straight to the connected branch. The Supabase edge function reuses your repository PAT to:
+  - Create blobs and trees for every generated update, creation, or deletion.
+  - Write a commit summarising the plan and advance the branch ref when the model output is valid.
+  - Record success, failure, and skipped states back into the activity feed together with links to the resulting commit.
+- Every successful run stores a knowledge node containing the instruction, summary, and file deltas. The right-hand "Knowledge vault" panel surfaces the latest entries so the agent can reuse prior insights on subsequent tasks.
+- Agent metrics now track total tasks, cumulative line changes, and the number of high-confidence knowledge nodes, giving you a quick pulse on how much the assistant has accomplished.
 
 ## How can I deploy this project?
 
