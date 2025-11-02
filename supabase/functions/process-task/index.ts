@@ -76,6 +76,7 @@ const MODEL_NAME =
   Deno.env.get('OLLAMA_MODEL') ??
   Deno.env.get('MODEL_NAME') ??
   'phi4';
+const GITHUB_API_URL = 'https://api.github.com';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL');
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
@@ -521,6 +522,7 @@ serve(async (req) => {
     };
 
     let totalLinesChanged = 0;
+    let autoApplyResult: AutoApplyResult | null = null;
     const generatedChanges: Array<
       StepChange & {
         stepId: string;
@@ -690,6 +692,8 @@ serve(async (req) => {
       generatedChanges,
       stats: {
         linesChanged: totalLinesChanged,
+        stepsExecuted: plan.steps.length,
+        changesProposed: generatedChanges.length,
       },
       githubTokenUsed: Boolean(githubToken),
       autoApplyResult,
@@ -720,30 +724,38 @@ serve(async (req) => {
       }).catch(() => {});
     }
 
-    if (totalLinesChanged !== 0) {
-      const { data: existingMetrics } = await supabase
-        .from('agent_metrics')
-        .select('lines_changed')
-        .eq('user_id', task.user_id)
-        .maybeSingle();
+    const knowledgeDelta = generatedChanges.length > 0 ? 1 : 0;
+    const { data: existingMetrics } = await supabase
+      .from('agent_metrics')
+      .select('lines_changed, tasks_completed, ai_decisions, knowledge_nodes, autonomy_level, learning_score')
+      .eq('user_id', task.user_id)
+      .maybeSingle();
 
-      if (existingMetrics) {
-        await supabase
-          .from('agent_metrics')
-          .update({
-            lines_changed: existingMetrics.lines_changed + totalLinesChanged,
-            updated_at: new Date().toISOString(),
-          })
-          .eq('user_id', task.user_id);
-      } else {
-        await supabase.from('agent_metrics').insert({
-          user_id: task.user_id,
-          lines_changed: totalLinesChanged,
-          tasks_completed: 0,
-          learning_score: 75,
-          autonomy_level: 92,
-        });
-      }
+    const aiDecisionsDelta = plan.steps.length;
+
+    if (existingMetrics) {
+      await supabase
+        .from('agent_metrics')
+        .update({
+          lines_changed: (existingMetrics.lines_changed ?? 0) + totalLinesChanged,
+          tasks_completed: (existingMetrics.tasks_completed ?? 0) + 1,
+          ai_decisions: (existingMetrics.ai_decisions ?? 0) + aiDecisionsDelta,
+          knowledge_nodes: (existingMetrics.knowledge_nodes ?? 0) + knowledgeDelta,
+          autonomy_level: existingMetrics.autonomy_level ?? 92,
+          learning_score: existingMetrics.learning_score ?? 75,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('user_id', task.user_id);
+    } else {
+      await supabase.from('agent_metrics').insert({
+        user_id: task.user_id,
+        lines_changed: totalLinesChanged,
+        tasks_completed: 1,
+        ai_decisions: aiDecisionsDelta,
+        knowledge_nodes: knowledgeDelta,
+        learning_score: 75,
+        autonomy_level: 92,
+      });
     }
 
     await supabase.from('activities').insert({
