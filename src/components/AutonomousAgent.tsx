@@ -140,6 +140,14 @@ interface AgentGeneratedChange {
   stepTitle?: string;
 }
 
+interface AutoApplyResult {
+  attempted: boolean;
+  success: boolean;
+  commitSha?: string;
+  error?: string;
+  filesChanged?: string[];
+}
+
 interface AgentTaskRecord {
   id: string;
   instruction: string;
@@ -172,6 +180,7 @@ interface AgentTaskRecord {
     stats?: {
       linesChanged?: number;
     };
+    autoApplyResult?: AutoApplyResult;
   };
   startedAt?: Date | null;
   completedAt?: Date | null;
@@ -1581,6 +1590,7 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
                         ? 'destructive'
                         : 'secondary';
                     const changes = (task.metadata.generatedChanges ?? []) as AgentGeneratedChange[];
+                    const autoApply = task.metadata.autoApplyResult as AutoApplyResult | undefined;
                     return (
                       <div key={task.id} className="space-y-3 rounded-lg border border-border/60 p-4">
                         <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
@@ -1600,6 +1610,25 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
 
                         {task.result && (
                           <p className="rounded-md bg-muted/40 p-3 text-sm text-muted-foreground">{task.result}</p>
+                        )}
+
+                        {autoApply?.attempted && (
+                          <p
+                            className={`text-xs ${
+                              autoApply.success ? 'text-emerald-500' : 'text-destructive'
+                            }`}
+                          >
+                            Auto-apply {autoApply.success ? 'succeeded' : 'failed'}
+                            {autoApply.commitSha
+                              ? ` – ${autoApply.commitSha.slice(0, 7)}`
+                              : ''}
+                            {autoApply.filesChanged?.length
+                              ? ` · ${autoApply.filesChanged.length} file${
+                                  autoApply.filesChanged.length === 1 ? '' : 's'
+                                }`
+                              : ''}
+                            {!autoApply.success && autoApply.error ? ` · ${autoApply.error}` : ''}
+                          </p>
                         )}
 
                         {changes.length > 0 ? (

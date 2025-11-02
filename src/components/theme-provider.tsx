@@ -20,38 +20,52 @@ const initialState: ThemeProviderState = {
 
 const ThemeProviderContext = createContext<ThemeProviderState>(initialState);
 
+const isBrowser = typeof window !== "undefined";
+
+const resolveStoredTheme = (storageKey: string, fallback: Theme) => {
+  if (!isBrowser) {
+    return fallback;
+  }
+  const stored = window.localStorage.getItem(storageKey) as Theme | null;
+  return stored ?? fallback;
+};
+
+const getSystemTheme = (): Exclude<Theme, "system"> => {
+  if (!isBrowser) {
+    return "light";
+  }
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+};
+
 export function ThemeProvider({
   children,
   defaultTheme = "system",
   storageKey = "ai-theme",
   ...props
 }: ThemeProviderProps) {
-  const [theme, setTheme] = useState<Theme>(
-    () => (localStorage.getItem(storageKey) as Theme) || defaultTheme
-  );
+  const [theme, setThemeState] = useState<Theme>(() => resolveStoredTheme(storageKey, defaultTheme));
 
   useEffect(() => {
+    if (!isBrowser) {
+      return;
+    }
     const root = window.document.documentElement;
     root.classList.remove("light", "dark");
 
-    if (theme === "system") {
-      const systemTheme = window.matchMedia("(prefers-color-scheme: dark)")
-        .matches
-        ? "dark"
-        : "light";
-      root.classList.add(systemTheme);
-      return;
-    }
-
-    root.classList.add(theme);
+    const appliedTheme = theme === "system" ? getSystemTheme() : theme;
+    root.classList.add(appliedTheme);
   }, [theme]);
+
+  const setTheme = (next: Theme) => {
+    if (isBrowser) {
+      window.localStorage.setItem(storageKey, next);
+    }
+    setThemeState(next);
+  };
 
   const value = {
     theme,
-    setTheme: (theme: Theme) => {
-      localStorage.setItem(storageKey, theme);
-      setTheme(theme);
-    },
+    setTheme,
   };
 
   return (

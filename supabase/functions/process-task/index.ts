@@ -33,6 +33,37 @@ interface StepResponse {
   insights?: string[];
 }
 
+const GITHUB_API_URL = 'https://api.github.com';
+
+class GitHubError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = 'GitHubError';
+    this.status = status;
+  }
+}
+
+interface GitHubRepoConfig {
+  owner: string;
+  name: string;
+  branch: string;
+}
+
+interface GitHubFileSnapshot {
+  path: string;
+  content: string;
+  sha: string | null;
+}
+
+interface AutoApplyResult {
+  attempted: boolean;
+  success: boolean;
+  commitSha?: string;
+  error?: string;
+  filesChanged?: string[];
+}
+
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-github-token',
@@ -80,6 +111,219 @@ const safeParseJson = <T>(value: string, fallback: T): T => {
 const countLines = (value: string | undefined | null) => {
   if (!value) return 0;
   return value.split(/\r\n|\r|\n/).length;
+};
+
+const decodeBase64 = (value: string) => {
+  const binary = atob(value);
+  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+  return new TextDecoder().decode(bytes);
+};
+
+const encodePath = (path: string) =>
+  path
+    .split('/')
+    .map((segment) => encodeURIComponent(segment))
+    .join('/');
+
+const githubRequest = async <T>(
+  path: string,
+  init: RequestInit = {},
+  token?: string
+): Promise<T> => {
+  const headers = new Headers(init.headers ?? {});
+  headers.set('Accept', 'application/vnd.github+json');
+  headers.set('X-GitHub-Api-Version', '2022-11-28');
+  if (token) {
+    headers.set('Authorization', `Bearer ${token}`);
+  }
+  if (init.body && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json');
+  }
+
+  const response = await fetch(`${GITHUB_API_URL}${path}`, {
+    ...init,
+    headers,
+  });
+
+  const text = await response.text();
+
+  if (!response.ok) {
+    let message = response.statusText || 'GitHub request failed';
+    if (text) {
+      try {
+        const data = JSON.parse(text);
+        if (data?.message) {
+          message = data.message;
+        }
+      } catch (_error) {
+        message = text;
+      }
+    }
+    throw new GitHubError(response.status, message);
+  }
+
+  if (!text) {
+    return null as T;
+  }
+
+  try {
+    return JSON.parse(text) as T;
+  } catch (_error) {
+    throw new GitHubError(response.status, 'Unable to parse GitHub response');
+  }
+};
+
+const fetchGitHubFile = async (
+  repo: GitHubRepoConfig,
+  path: string,
+  token?: string
+): Promise<GitHubFileSnapshot | null> => {
+  const encodedPath = encodePath(path);
+  try {
+    const data = await githubRequest<{
+      type?: string;
+      content?: string;
+      encoding?: string;
+      sha?: string;
+    }>(
+      `/repos/${repo.owner}/${repo.name}/contents/${encodedPath}?ref=${encodeURIComponent(repo.branch)}`,
+      {},
+      token
+    );
+
+    if (!data || data.type !== 'file' || !data.content || data.encoding !== 'base64') {
+      return null;
+    }
+
+    return {
+      path,
+      content: decodeBase64(data.content),
+      sha: data.sha ?? null,
+    };
+  } catch (error) {
+    if (error instanceof GitHubError && error.status === 404) {
+      return null;
+    }
+    throw error;
+  }
+};
+
+const commitAutoAppliedChanges = async (
+  repo: GitHubRepoConfig,
+  changes: StepChange[],
+  instruction: string,
+  token: string
+) => {
+  if (changes.length === 0) {
+    throw new Error('No changes to apply automatically');
+  }
+
+  const branchRef = await githubRequest<{ object?: { sha?: string } }>(
+    `/repos/${repo.owner}/${repo.name}/git/ref/heads/${encodeURIComponent(repo.branch)}`,
+    {},
+    token
+  );
+
+  const baseCommitSha = branchRef?.object?.sha;
+  if (!baseCommitSha) {
+    throw new Error('Unable to resolve branch head for auto-apply commit');
+  }
+
+  const latestCommit = await githubRequest<{ tree?: { sha?: string } }>(
+    `/repos/${repo.owner}/${repo.name}/git/commits/${baseCommitSha}`,
+    {},
+    token
+  );
+
+  const baseTreeSha = latestCommit?.tree?.sha;
+  if (!baseTreeSha) {
+    throw new Error('Unable to resolve base tree for auto-apply commit');
+  }
+
+  const finalChanges = new Map<
+    string,
+    { action: 'update' | 'create' | 'delete'; content?: string }
+  >();
+  changes.forEach((change) => {
+    if (change.action === 'delete') {
+      finalChanges.set(change.path, { action: 'delete' });
+    } else if (typeof change.new_content === 'string') {
+      finalChanges.set(change.path, {
+        action: change.action,
+        content: change.new_content,
+      });
+    }
+  });
+
+  if (finalChanges.size === 0) {
+    throw new Error('No applicable changes to commit automatically');
+  }
+
+  const blobMap = new Map<string, string>();
+  for (const [path, change] of finalChanges.entries()) {
+    if (change.action === 'delete') continue;
+
+    const blobResponse = await githubRequest<{ sha: string }>(
+      `/repos/${repo.owner}/${repo.name}/git/blobs`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          content: change.content ?? '',
+          encoding: 'utf-8',
+        }),
+      },
+      token
+    );
+
+    blobMap.set(path, blobResponse.sha);
+  }
+
+  const treeEntries = Array.from(finalChanges.entries()).map(([path, change]) => ({
+    path,
+    mode: '100644',
+    type: 'blob',
+    sha: change.action === 'delete' ? null : blobMap.get(path),
+  }));
+
+  const newTree = await githubRequest<{ sha: string }>(
+    `/repos/${repo.owner}/${repo.name}/git/trees`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        base_tree: baseTreeSha,
+        tree: treeEntries,
+      }),
+    },
+    token
+  );
+
+  const commitMessage = `AutoDidact: ${instruction.slice(0, 80)}`;
+  const commitResponse = await githubRequest<{ sha: string }>(
+    `/repos/${repo.owner}/${repo.name}/git/commits`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        message: commitMessage,
+        tree: newTree.sha,
+        parents: [baseCommitSha],
+      }),
+    },
+    token
+  );
+
+  await githubRequest(
+    `/repos/${repo.owner}/${repo.name}/git/refs/heads/${encodeURIComponent(repo.branch)}`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify({ sha: commitResponse.sha }),
+    },
+    token
+  );
+
+  return {
+    commitSha: commitResponse.sha,
+    filesChanged: Array.from(finalChanges.keys()),
+  };
 };
 
 const callModel = async (messages: ChatMessage[], expectJson: boolean) => {
@@ -159,9 +403,17 @@ serve(async (req) => {
     };
 
     const files = metadata.files ?? [];
-    const filesForPrompt = files.map((file) => ({
+    const fileSnapshots = new Map<string, GitHubFileSnapshot>();
+    files.forEach((file) => {
+      fileSnapshots.set(file.path, {
+        path: file.path,
+        content: file.content ?? '',
+        sha: file.sha ?? null,
+      });
+    });
+    const filesForPrompt = Array.from(fileSnapshots.values()).map((file) => ({
       path: file.path,
-      content: (file.content ?? '').slice(0, 8000),
+      content: file.content.slice(0, 8000),
     }));
 
     const { data: knowledge } = await supabase
@@ -218,6 +470,56 @@ serve(async (req) => {
       fileContentMap.set(file.path, file.content ?? '');
     });
 
+    const missingFilePaths = new Set<string>();
+    const ensureFileSnapshot = async (path: string): Promise<GitHubFileSnapshot | null> => {
+      if (fileSnapshots.has(path)) {
+        return fileSnapshots.get(path)!;
+      }
+
+      if (!metadata.repo) {
+        return null;
+      }
+
+      try {
+        const fetched = await fetchGitHubFile(metadata.repo, path, githubToken || undefined);
+        if (fetched) {
+          fileSnapshots.set(path, fetched);
+          await supabase.from('activities').insert({
+            user_id: task.user_id,
+            task_id: taskId,
+            type: 'file',
+            status: 'progress',
+            message: `Fetched ${path} from GitHub for context`,
+          });
+          return fetched;
+        }
+      } catch (error) {
+        await supabase.from('activities').insert({
+          user_id: task.user_id,
+          task_id: taskId,
+          type: 'error',
+          status: 'error',
+          message: `Failed to load ${path} from GitHub: ${
+            error instanceof Error ? error.message : 'Unknown error'
+          }`,
+        });
+        return null;
+      }
+
+      if (!missingFilePaths.has(path)) {
+        missingFilePaths.add(path);
+        await supabase.from('activities').insert({
+          user_id: task.user_id,
+          task_id: taskId,
+          type: 'warning',
+          status: 'warning',
+          message: `Context file ${path} not found in repository`,
+        });
+      }
+
+      return null;
+    };
+
     let totalLinesChanged = 0;
     const generatedChanges: Array<
       StepChange & {
@@ -243,9 +545,13 @@ serve(async (req) => {
           ? step.target_files
           : files.map((file) => ({ path: file.path }))) ?? [];
 
+      for (const { path } of stepFiles) {
+        await ensureFileSnapshot(path);
+      }
+
       const stepFilePayload = stepFiles.map(({ path }) => ({
         path,
-        content: (fileContentMap.get(path) ?? '').slice(0, 10000),
+        content: (fileSnapshots.get(path)?.content ?? '').slice(0, 10000),
       }));
 
       const stepPrompt: ChatMessage[] = [
@@ -271,15 +577,20 @@ serve(async (req) => {
 
       for (const change of stepResult.changes ?? []) {
         if (!change.path) continue;
-        const original = fileContentMap.get(change.path) ?? '';
+        const existingSnapshot = fileSnapshots.get(change.path);
+        const original = existingSnapshot?.content ?? '';
         let lineDelta = 0;
 
         if (change.action === 'delete') {
           lineDelta = -countLines(original);
-          fileContentMap.delete(change.path);
+          fileSnapshots.delete(change.path);
         } else if (typeof change.new_content === 'string') {
           lineDelta = countLines(change.new_content) - countLines(original);
-          fileContentMap.set(change.path, change.new_content);
+          fileSnapshots.set(change.path, {
+            path: change.path,
+            content: change.new_content,
+            sha: existingSnapshot?.sha ?? null,
+          });
         } else {
           continue;
         }
@@ -309,6 +620,70 @@ serve(async (req) => {
       });
     }
 
+    const autoApplyResult: AutoApplyResult = {
+      attempted: Boolean(metadata.autoApply),
+      success: false,
+    };
+
+    if (metadata.autoApply) {
+      if (!metadata.repo) {
+        autoApplyResult.error = 'Repository information missing';
+      } else if (!githubToken) {
+        autoApplyResult.error = 'GitHub token required for auto-apply';
+        await supabase.from('activities').insert({
+          user_id: task.user_id,
+          task_id: taskId,
+          type: 'warning',
+          status: 'warning',
+          message: 'Auto-apply skipped: GitHub token is required',
+        });
+      } else if (generatedChanges.length === 0) {
+        autoApplyResult.error = 'No generated changes available to apply';
+      } else {
+        await supabase.from('activities').insert({
+          user_id: task.user_id,
+          task_id: taskId,
+          type: 'ai',
+          status: 'progress',
+          message: `Auto-applying ${generatedChanges.length} change(s) to GitHub`,
+        });
+
+        try {
+          const commitInfo = await commitAutoAppliedChanges(
+            metadata.repo,
+            generatedChanges,
+            task.instruction,
+            githubToken
+          );
+          autoApplyResult.success = true;
+          autoApplyResult.commitSha = commitInfo.commitSha;
+          autoApplyResult.filesChanged = commitInfo.filesChanged;
+
+          await supabase.from('activities').insert({
+            user_id: task.user_id,
+            task_id: taskId,
+            type: 'success',
+            status: 'success',
+            message: `Auto-apply commit ${commitInfo.commitSha.slice(0, 7)} pushed to ${metadata.repo.branch}`,
+            metadata: {
+              filesChanged: commitInfo.filesChanged,
+            },
+          });
+        } catch (error) {
+          autoApplyResult.error = error instanceof Error ? error.message : 'Unknown error';
+          await supabase.from('activities').insert({
+            user_id: task.user_id,
+            task_id: taskId,
+            type: 'error',
+            status: 'error',
+            message: `Auto-apply failed: ${autoApplyResult.error}`,
+          });
+        }
+      }
+    } else {
+      autoApplyResult.attempted = false;
+    }
+
     const taskMetadata = {
       ...metadata,
       plan,
@@ -317,6 +692,7 @@ serve(async (req) => {
         linesChanged: totalLinesChanged,
       },
       githubTokenUsed: Boolean(githubToken),
+      autoApplyResult,
     };
 
     await supabase
@@ -388,6 +764,7 @@ serve(async (req) => {
         plan,
         generatedChanges,
         linesChanged: totalLinesChanged,
+        autoApplyResult,
       }),
       {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },

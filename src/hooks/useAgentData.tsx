@@ -19,6 +19,14 @@ interface Stats {
   autonomyLevel: number;
 }
 
+interface AutoApplyResult {
+  attempted: boolean;
+  success: boolean;
+  commitSha?: string;
+  error?: string;
+  filesChanged?: string[];
+}
+
 interface AgentTaskFileContext {
   path: string;
   content: string;
@@ -39,6 +47,7 @@ interface AgentTaskMetadata {
   stats?: {
     linesChanged?: number;
   };
+  autoApplyResult?: AutoApplyResult;
   [key: string]: unknown;
 }
 
