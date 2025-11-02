@@ -2011,14 +2011,11 @@ interface AgentDescriptor {
 }
 
 export const AutonomousAgent: React.FC = () => {
-  const [agents, setAgents] = useState<AgentDescriptor[]>(() => {
-    const initialId = generateId();
-    return [{ id: initialId, name: 'Agent 1' }];
-  });
-  const [activeAgentId, setActiveAgentId] = useState(() => {
-    const initialId = agents[0]?.id ?? '';
-    return initialId;
-  });
+  const initialAgentId = useMemo(() => generateId(), []);
+const [agents, setAgents] = useState<AgentDescriptor[]>(() => [
+  { id: initialAgentId, name: 'Agent 1' },
+]);
+const [activeAgentId, setActiveAgentId] = useState<string>(() => initialAgentId);
 
   useEffect(() => {
     if (agents.length === 0) {
