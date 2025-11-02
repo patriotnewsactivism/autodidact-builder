@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -7,55 +7,104 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Brain, Sparkles } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
+import { AuthApiError, AuthError } from '@supabase/supabase-js';
 
 export const Auth = () => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [loading, setLoading] = useState(false);
+  const [signInLoading, setSignInLoading] = useState(false);
+  const [signUpLoading, setSignUpLoading] = useState(false);
+  const [formErrors, setFormErrors] = useState<{ signin?: string; signup?: string }>({});
   const { toast } = useToast();
+
+  const normaliseErrorMessage = useCallback((error: unknown) => {
+    if (error instanceof AuthApiError || error instanceof AuthError) {
+      if (error.status === 400 && /uninitialized variable/i.test(error.message)) {
+        return 'Authentication service is misconfigured. Please try again later or contact support.';
+      }
+      return error.message;
+    }
+
+    if (error instanceof Error) {
+      if (/uninitialized variable/i.test(error.message)) {
+        return 'Authentication service is misconfigured. Please try again later or contact support.';
+      }
+      return error.message;
+    }
+
+    return 'Unexpected authentication error';
+  }, []);
+
+  const handleAuthError = useCallback(
+    (scope: 'signin' | 'signup', error: unknown) => {
+      const message = normaliseErrorMessage(error);
+      setFormErrors((prev) => ({ ...prev, [scope]: message }));
+      toast({
+        title: 'Authentication error',
+        description: message,
+        variant: 'destructive',
+      });
+    },
+    [normaliseErrorMessage, toast]
+  );
+
+  const resetFormError = useCallback((scope: 'signin' | 'signup') => {
+    setFormErrors((prev) => ({ ...prev, [scope]: undefined }));
+  }, []);
 
   const handleSignUp = async (e: React.FormEvent) => {
     e.preventDefault();
-    setLoading(true);
+    resetFormError('signup');
+    setSignUpLoading(true);
 
-    const { error } = await supabase.auth.signUp({
-      email,
-      password,
-    });
-
-    if (error) {
-      toast({
-        title: 'Error',
-        description: error.message,
-        variant: 'destructive',
+    try {
+      const { error } = await supabase.auth.signUp({
+        email,
+        password,
       });
-    } else {
+
+      if (error) {
+        handleAuthError('signup', error);
+        return;
+      }
+
       toast({
         title: 'Success',
         description: 'Account created! You can now sign in.',
       });
+      setPassword('');
+    } catch (error) {
+      handleAuthError('signup', error);
+    } finally {
+      setSignUpLoading(false);
     }
-    setLoading(false);
   };
 
   const handleSignIn = async (e: React.FormEvent) => {
     e.preventDefault();
-    setLoading(true);
+    resetFormError('signin');
+    setSignInLoading(true);
 
-    const { error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
-
-    if (error) {
-      toast({
-        title: 'Error',
-        description: error.message,
-        variant: 'destructive',
+    try {
+      const { error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
       });
+
+      if (error) {
+        handleAuthError('signin', error);
+        return;
+      }
+      toast({ title: 'Signed in', description: 'Welcome back!' });
+      setPassword('');
+    } catch (error) {
+      handleAuthError('signin', error);
+    } finally {
+      setSignInLoading(false);
     }
-    setLoading(false);
   };
+
+  const disableAuthInputs = useMemo(() => signInLoading || signUpLoading, [signInLoading, signUpLoading]);
 
   return (
     <div className="min-h-screen flex items-center justify-center p-6 bg-background">
@@ -91,6 +140,7 @@ export const Auth = () => {
                   onChange={(e) => setEmail(e.target.value)}
                   required
                   className="bg-input/50 border-border/50"
+                  disabled={disableAuthInputs}
                 />
               </div>
               <div className="space-y-2">
@@ -103,15 +153,21 @@ export const Auth = () => {
                   onChange={(e) => setPassword(e.target.value)}
                   required
                   className="bg-input/50 border-border/50"
+                  disabled={disableAuthInputs}
                 />
               </div>
-              <Button 
-                type="submit" 
+              <Button
+                type="submit"
                 className="w-full bg-primary hover:bg-primary/90 glow-strong"
-                disabled={loading}
+                disabled={signInLoading}
               >
-                {loading ? 'Signing in...' : 'Sign In'}
+                {signInLoading ? 'Signing in...' : 'Sign In'}
               </Button>
+              {formErrors.signin && (
+                <p className="text-sm text-destructive" role="alert">
+                  {formErrors.signin}
+                </p>
+              )}
             </form>
           </TabsContent>
 
@@ -127,6 +183,7 @@ export const Auth = () => {
                   onChange={(e) => setEmail(e.target.value)}
                   required
                   className="bg-input/50 border-border/50"
+                  disabled={disableAuthInputs}
                 />
               </div>
               <div className="space-y-2">
@@ -139,15 +196,21 @@ export const Auth = () => {
                   onChange={(e) => setPassword(e.target.value)}
                   required
                   className="bg-input/50 border-border/50"
+                  disabled={disableAuthInputs}
                 />
               </div>
-              <Button 
-                type="submit" 
+              <Button
+                type="submit"
                 className="w-full bg-primary hover:bg-primary/90 glow-strong"
-                disabled={loading}
+                disabled={signUpLoading}
               >
-                {loading ? 'Creating account...' : 'Sign Up'}
+                {signUpLoading ? 'Creating account...' : 'Sign Up'}
               </Button>
+              {formErrors.signup && (
+                <p className="text-sm text-destructive" role="alert">
+                  {formErrors.signup}
+                </p>
+              )}
             </form>
           </TabsContent>
         </Tabs>
