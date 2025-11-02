@@ -1,461 +1,1277 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { 
-  Brain, Activity, Play, Pause, Cpu, Network, Shield, 
-  Terminal, Code, TrendingUp, Zap, CheckCircle, XCircle,
-  Clock, AlertTriangle, FileCode, GitBranch, BarChart3,
-  Sparkles, Target, Lightbulb, Database, CloudCog
+import { Label } from '@/components/ui/label';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Progress } from '@/components/ui/progress';
+import {
+  Activity,
+  AlertCircle,
+  ArrowLeft,
+  Bot,
+  CheckCircle,
+  Clock,
+  ExternalLink,
+  FileCode,
+  FileDiff,
+  Folder,
+  GitBranch,
+  GitCommit,
+  Link2,
+  Loader2,
+  Plus,
+  RefreshCw,
+  Save,
+  Sigma,
+  X,
 } from 'lucide-react';
-import { StatsGrid } from './StatsGrid';
-import { ActivityFeed } from './ActivityFeed';
-import { TerminalPanel } from './TerminalPanel';
-import { MetricsChart } from './MetricsChart';
+import { useToast } from '@/hooks/use-toast';
 
-// Type definitions
-interface ActivityItem {
+const GITHUB_API_URL = 'https://api.github.com';
+const CONNECTION_STORAGE_KEY = 'autodidact-builder:github-connection';
+const MAX_LINE_COUNT_BLOBS = 400;
+
+type StatusLevel = 'info' | 'success' | 'error';
+type OperationStatus = 'running' | 'success' | 'error';
+
+interface StatusEntry {
   id: string;
-  type: 'ai' | 'success' | 'error' | 'info';
   message: string;
+  level: StatusLevel;
   timestamp: Date;
-  status: 'progress' | 'success' | 'error' | 'pending';
 }
 
-interface Stats {
-  tasksCompleted: number;
-  linesChanged: number;
-  aiDecisions: number;
-  learningScore: number;
-  knowledgeNodes: number;
-  autonomyLevel: number;
+interface OperationEntry {
+  id: string;
+  label: string;
+  status: OperationStatus;
+  startedAt: Date;
+  finishedAt?: Date;
+  message?: string;
+  progress?: {
+    current: number;
+    total?: number;
+  };
 }
 
-interface Performance {
-  cpu: number;
-  memory: number;
-  throughput: number;
-  latency: number;
+interface RepoInfo {
+  full_name: string;
+  description: string | null;
+  default_branch: string;
+  stargazers_count: number;
+  forks_count: number;
+  open_issues_count: number;
+  watchers_count: number;
+  html_url: string;
+  pushed_at: string;
 }
 
-// Constants
-const PERFORMANCE_UPDATE_INTERVAL = 2000;
-const TASK_SIMULATION_DELAY = 3000;
-const MAX_PERFORMANCE_VALUE = 100;
-const MAX_LEARNING_SCORE = 100;
-const INITIAL_KNOWLEDGE_NODES = 1247;
+interface BranchInfo {
+  name: string;
+}
 
-const RECENT_LEARNINGS = [
-  'React component optimization patterns',
-  'Advanced TypeScript type inference',
-  'Database query optimization',
-  'Machine learning model fine-tuning',
-  'Distributed system architecture'
-];
+interface GitHubContent {
+  name: string;
+  path: string;
+  sha: string;
+  size: number;
+  type: 'file' | 'dir';
+}
 
-export const AutonomousAgent: React.FC = () => {
-  // State management
-  const [isRunning, setIsRunning] = useState(false);
-  const [instruction, setInstruction] = useState('');
-  const [activities, setActivities] = useState<ActivityItem[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
-  
-  const [stats, setStats] = useState<Stats>({
-    tasksCompleted: 0,
-    linesChanged: 0,
-    aiDecisions: 0,
-    learningScore: 75,
-    knowledgeNodes: INITIAL_KNOWLEDGE_NODES,
-    autonomyLevel: 92
+interface GitHubFileResponse extends GitHubContent {
+  encoding: 'base64';
+  content: string;
+}
+
+interface CommitEntry {
+  sha: string;
+  message: string;
+  authorName: string;
+  date: string;
+  url: string;
+}
+
+interface SelectedFile {
+  path: string;
+  sha: string;
+  content: string;
+  originalContent: string;
+}
+
+interface AgentWorkspaceProps {
+  agentId: string;
+  agentName: string;
+}
+
+const formatDate = (value: string | Date) => {
+  const date = value instanceof Date ? value : new Date(value);
+  return date.toLocaleString();
+};
+
+const encodeContent = (value: string) => {
+  const encoder = new TextEncoder();
+  const bytes = encoder.encode(value);
+  let binary = '';
+  bytes.forEach((byte) => {
+    binary += String.fromCharCode(byte);
   });
+  return btoa(binary);
+};
 
-  const [performance, setPerformance] = useState<Performance>({
-    cpu: 0,
-    memory: 0,
-    throughput: 0,
-    latency: 0
-  });
+const decodeContent = (value: string) => {
+  const binary = atob(value);
+  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+  return new TextDecoder().decode(bytes);
+};
 
-  const [terminalOutput, setTerminalOutput] = useState<string[]>([]);
-  
-  // Refs
-  const performanceIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const taskTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const activityIdRef = useRef(0);
+const encodePath = (path: string) =>
+  path
+    .split('/')
+    .map((segment) => encodeURIComponent(segment))
+    .join('/');
 
-  // Utility functions
-  const generateActivityId = useCallback(() => `activity-${++activityIdRef.current}`, []);
+const countLines = (value: string) => {
+  if (!value) {
+    return 0;
+  }
+  return value.split(/\r\n|\r|\n/).length;
+};
 
-  const clampValue = useCallback((value: number, min: number = 0, max: number = MAX_PERFORMANCE_VALUE): number => {
-    return Math.min(max, Math.max(min, value));
-  }, []);
+const isProbablyBinary = (value: string) => {
+  if (!value) return false;
+  const sample = value.slice(0, 1024);
+  let controlCharacters = 0;
+  for (let index = 0; index < sample.length; index += 1) {
+    const code = sample.charCodeAt(index);
+    if (code === 9 || code === 10 || code === 13) continue;
+    if (code < 32 || code === 65533) {
+      controlCharacters += 1;
+    }
+  }
+  return controlCharacters / sample.length > 0.2;
+};
 
-  const addActivity = useCallback((
-    type: ActivityItem['type'], 
-    message: string, 
-    status: ActivityItem['status'] = 'pending'
-  ) => {
-    const newActivity: ActivityItem = {
-      id: generateActivityId(),
-      type,
-      message,
-      timestamp: new Date(),
-      status
-    };
-    
-    setActivities(prev => [newActivity, ...prev.slice(0, 99)]); // Keep only last 100 activities
-  }, [generateActivityId]);
+const generateId = () => {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+    return crypto.randomUUID();
+  }
+  return Math.random().toString(36).slice(2, 10);
+};
 
-  const addTerminalOutput = useCallback((output: string | string[]) => {
-    const outputs = Array.isArray(output) ? output : [output];
-    setTerminalOutput(prev => [...prev, ...outputs].slice(-1000)); // Keep only last 1000 lines
-  }, []);
+const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) => {
+  const storageKey = `${CONNECTION_STORAGE_KEY}:${agentId}`;
+  const { toast } = useToast();
+  const [token, setToken] = useState('');
+  const [repoInput, setRepoInput] = useState('');
+  const [owner, setOwner] = useState('');
+  const [repo, setRepo] = useState('');
+  const [branch, setBranch] = useState('');
+  const [branches, setBranches] = useState<string[]>([]);
+  const [connectionState, setConnectionState] = useState<'idle' | 'connecting' | 'connected' | 'error'>('idle');
+  const [repoInfo, setRepoInfo] = useState<RepoInfo | null>(null);
+  const [contents, setContents] = useState<GitHubContent[]>([]);
+  const [currentPath, setCurrentPath] = useState('');
+  const [selectedFile, setSelectedFile] = useState<SelectedFile | null>(null);
+  const [commitMessage, setCommitMessage] = useState('');
+  const [commits, setCommits] = useState<CommitEntry[]>([]);
+  const [statusLog, setStatusLog] = useState<StatusEntry[]>([]);
+  const [operations, setOperations] = useState<OperationEntry[]>([]);
+  const [trackedEdits, setTrackedEdits] = useState<Record<string, { isDirty: boolean; lineDelta: number }>>({});
+  const [committedPaths, setCommittedPaths] = useState<string[]>([]);
+  const [sessionLinesChanged, setSessionLinesChanged] = useState(0);
+  const [totalLineCount, setTotalLineCount] = useState<number | null>(null);
+  const [lineCountStatus, setLineCountStatus] = useState<'idle' | 'loading' | 'error'>('idle');
+  const [lineCountError, setLineCountError] = useState<string | null>(null);
+  const [isLoadingContents, setIsLoadingContents] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [isLoadingCommits, setIsLoadingCommits] = useState(false);
 
-  // Performance metrics simulation
-  const updatePerformanceMetrics = useCallback(() => {
-    setPerformance(prev => ({
-      cpu: clampValue(prev.cpu + (Math.random() - 0.5) * 20),
-      memory: clampValue(prev.memory + (Math.random() - 0.5) * 15),
-      throughput: Math.floor(Math.random() * 1000),
-      latency: Math.floor(Math.random() * 100)
-    }));
-  }, [clampValue]);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const saved = window.localStorage.getItem(storageKey);
+    if (!saved) return;
 
-  // Task execution handler
-  const handleExecuteTask = useCallback(async () => {
-    if (!instruction.trim() || isRunning) return;
-    
     try {
-      setIsRunning(true);
-      setIsLoading(true);
-      setError(null);
-      
-      const task = instruction.trim();
-      setInstruction('');
-
-      // Add initial activity
-      addActivity('ai', `Processing: ${task}`, 'progress');
-
-      // Add terminal output
-      addTerminalOutput([
-        `> ${task}`,
-        'Analyzing request...',
-        'Planning execution strategy...',
-        'Initializing AI subsystems...'
-      ]);
-
-      // Simulate AI processing with proper error handling
-      taskTimeoutRef.current = setTimeout(() => {
-        try {
-          // Update activities
-          addActivity('success', `Task completed: ${task}`, 'success');
-          
-          // Update stats
-          setStats(prev => ({
-            ...prev,
-            tasksCompleted: prev.tasksCompleted + 1,
-            aiDecisions: prev.aiDecisions + Math.floor(Math.random() * 5) + 1,
-            learningScore: clampValue(prev.learningScore + 1, 0, MAX_LEARNING_SCORE),
-            linesChanged: prev.linesChanged + Math.floor(Math.random() * 50) + 10
-          }));
-
-          addTerminalOutput([
-            '✓ Task analysis complete',
-            '✓ Implementation successful',
-            '✓ Tests passed',
-            '✓ Task completed successfully',
-            ''
-          ]);
-          
-        } catch (taskError) {
-          const errorMessage = taskError instanceof Error ? taskError.message : 'Task execution failed';
-          setError(errorMessage);
-          addActivity('error', `Task failed: ${errorMessage}`, 'error');
-          addTerminalOutput(['✗ Task execution failed', `Error: ${errorMessage}`, '']);
-        } finally {
-          setIsRunning(false);
-          setIsLoading(false);
-        }
-      }, TASK_SIMULATION_DELAY);
-
+      const parsed = JSON.parse(saved) as { repo: string; branch?: string };
+      setRepoInput(parsed.repo ?? '');
+      if (parsed.branch) {
+        setBranch(parsed.branch);
+      }
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Failed to execute task';
-      setError(errorMessage);
-      addActivity('error', errorMessage, 'error');
-      setIsRunning(false);
-      setIsLoading(false);
+      console.warn('Failed to parse saved GitHub connection:', error);
     }
-  }, [instruction, isRunning, addActivity, addTerminalOutput, clampValue]);
+  }, [storageKey]);
 
-  const handleStopTask = useCallback(() => {
-    if (taskTimeoutRef.current) {
-      clearTimeout(taskTimeoutRef.current);
-      taskTimeoutRef.current = null;
-    }
-    
-    setIsRunning(false);
-    setIsLoading(false);
-    addActivity('info', 'Task execution stopped by user', 'error');
-    addTerminalOutput(['⚠ Task execution interrupted', '']);
-  }, [addActivity, addTerminalOutput]);
-
-  const handleKeyPress = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter' && !isRunning && instruction.trim()) {
-      handleExecuteTask();
-    }
-  }, [handleExecuteTask, isRunning, instruction]);
-
-  // Effects
   useEffect(() => {
-    // Start performance metrics updates
-    performanceIntervalRef.current = setInterval(updatePerformanceMetrics, PERFORMANCE_UPDATE_INTERVAL);
+    if (typeof window === 'undefined') return;
+    if (!owner || !repo) return;
 
-    return () => {
-      // Cleanup intervals and timeouts
-      if (performanceIntervalRef.current) {
-        clearInterval(performanceIntervalRef.current);
-      }
-      if (taskTimeoutRef.current) {
-        clearTimeout(taskTimeoutRef.current);
-      }
+    const payload = JSON.stringify({ repo: `${owner}/${repo}`, branch });
+    window.localStorage.setItem(storageKey, payload);
+  }, [branch, owner, repo, storageKey]);
+
+  const logStatus = useCallback((message: string, level: StatusLevel = 'info') => {
+    setStatusLog((prev) => [{ id: generateId(), message, level, timestamp: new Date() }, ...prev].slice(0, 50));
+  }, []);
+
+  const startOperation = useCallback((label: string) => {
+    const id = generateId();
+    const entry: OperationEntry = {
+      id,
+      label,
+      status: 'running',
+      startedAt: new Date(),
     };
-  }, [updatePerformanceMetrics]);
+    setOperations((prev) => [entry, ...prev].slice(0, 40));
+    return id;
+  }, []);
 
-  // Add initial welcome message
-  useEffect(() => {
-    addActivity('info', 'AI Agent initialized and ready for instructions', 'success');
-    addTerminalOutput([
-      'Autonomous AI Agent v2.0.0',
-      'System initialized successfully',
-      'Ready for instructions...',
-      ''
-    ]);
-  }, [addActivity, addTerminalOutput]);
+  const finishOperation = useCallback((id: string, status: OperationStatus, message?: string) => {
+    setOperations((prev) =>
+      prev.map((operation) =>
+        operation.id === id
+          ? {
+              ...operation,
+              status,
+              finishedAt: new Date(),
+              message: message ?? operation.message,
+            }
+          : operation
+      )
+    );
+  }, []);
 
-  // Memoized values
-  const statusBadges = useMemo(() => [
-    {
-      icon: Cpu,
-      label: `CPU: ${performance.cpu.toFixed(0)}%`,
-      variant: 'outline' as const,
-      color: 'text-primary'
+  const updateOperationProgress = useCallback((id: string, progress: { current: number; total?: number }) => {
+    setOperations((prev) =>
+      prev.map((operation) => (operation.id === id ? { ...operation, progress } : operation))
+    );
+  }, []);
+
+  const resetSessionTracking = useCallback(() => {
+    setTrackedEdits({});
+    setCommittedPaths([]);
+    setSessionLinesChanged(0);
+  }, []);
+
+  const request = useCallback(
+    async <T,>(path: string, init: RequestInit = {}) => {
+      const headers: Record<string, string> = {
+        Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+      };
+
+      if (token.trim()) {
+        headers.Authorization = `Bearer ${token.trim()}`;
+      }
+
+      if (init.body && !(init.headers && 'Content-Type' in init.headers)) {
+        headers['Content-Type'] = 'application/json';
+      }
+
+      const response = await fetch(`${GITHUB_API_URL}${path}`, {
+        ...init,
+        headers,
+      });
+
+      const text = await response.text();
+
+      if (!response.ok) {
+        let message = response.statusText;
+        try {
+          const data = text ? JSON.parse(text) : null;
+          if (data?.message) {
+            message = data.message;
+          }
+        } catch (error) {
+          if (text) {
+            message = text;
+          }
+        }
+        throw new Error(message || 'GitHub request failed');
+      }
+
+      if (!text) {
+        return null as T;
+      }
+
+      try {
+        return JSON.parse(text) as T;
+      } catch (error) {
+        throw new Error('Unable to parse GitHub response');
+      }
     },
-    {
-      icon: Network,
-      label: `${stats.knowledgeNodes} Nodes`,
-      variant: 'outline' as const,
-      color: 'text-accent'
+    [token]
+  );
+
+  const calculateRepositoryLineCount = useCallback(
+    async (branchOverride?: string) => {
+      if (!owner || !repo) return false;
+      const activeBranch = branchOverride ?? branch;
+      if (!activeBranch) return false;
+
+      const operationId = startOperation(`Analyzing ${activeBranch} line count`);
+      setLineCountStatus('loading');
+      setLineCountError(null);
+      logStatus(`Calculating repository line count for ${activeBranch}...`);
+
+      try {
+        const branchInfo = await request<{ commit?: { sha?: string } }>(
+          `/repos/${owner}/${repo}/branches/${encodeURIComponent(activeBranch)}`
+        );
+        const commitSha = branchInfo?.commit?.sha;
+        if (!commitSha) {
+          throw new Error('Unable to resolve branch head for line count analysis');
+        }
+
+        const tree = await request<{ tree: { path: string; type: string; sha: string }[] }>(
+          `/repos/${owner}/${repo}/git/trees/${commitSha}?recursive=1`
+        );
+        const blobs = tree?.tree?.filter((item) => item.type === 'blob') ?? [];
+        const limitedBlobs = blobs.slice(0, MAX_LINE_COUNT_BLOBS);
+
+        let processed = 0;
+        let totalLinesAccumulated = 0;
+        for (const blob of limitedBlobs) {
+          const blobData = await request<{ content?: string; encoding?: string }>(
+            `/repos/${owner}/${repo}/git/blobs/${blob.sha}`
+          );
+          if (!blobData?.content || blobData.encoding !== 'base64') {
+            continue;
+          }
+          const decoded = decodeContent(blobData.content);
+          if (isProbablyBinary(decoded)) {
+            continue;
+          }
+          totalLinesAccumulated += countLines(decoded);
+          processed += 1;
+          updateOperationProgress(operationId, { current: processed, total: limitedBlobs.length });
+          if (processed % 50 === 0) {
+            logStatus(`Line count progress: ${processed}/${limitedBlobs.length} files processed.`);
+          }
+        }
+
+        if (blobs.length > limitedBlobs.length) {
+          logStatus(`Line count limited to first ${limitedBlobs.length} files for performance.`, 'info');
+        }
+
+        setTotalLineCount(totalLinesAccumulated);
+        setLineCountStatus('idle');
+        finishOperation(operationId, 'success');
+        logStatus(`Estimated repository line count: ${totalLinesAccumulated.toLocaleString()} lines.`, 'success');
+        return true;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Failed to calculate repository lines';
+        setLineCountStatus('error');
+        setLineCountError(message);
+        finishOperation(operationId, 'error', message);
+        logStatus(message, 'error');
+        return false;
+      }
     },
-    {
-      icon: Zap,
-      label: `IQ: ${stats.learningScore}%`,
-      variant: 'outline' as const,
-      color: 'text-warning'
+    [branch, finishOperation, logStatus, owner, repo, request, startOperation, updateOperationProgress]
+  );
+
+  const loadCommits = useCallback(
+    async (targetBranch?: string) => {
+      if (!owner || !repo) return false;
+      const branchToLoad = targetBranch ?? branch;
+      if (!branchToLoad) return false;
+
+      const operationId = startOperation(`Fetching commits (${branchToLoad})`);
+      setIsLoadingCommits(true);
+      try {
+        const data = await request<any[]>(
+          `/repos/${owner}/${repo}/commits?sha=${encodeURIComponent(branchToLoad)}&per_page=10`
+        );
+        const mapped = (data ?? []).map((commit) => ({
+          sha: commit.sha,
+          message: commit.commit?.message?.split('\n')[0] ?? 'Commit',
+          authorName: commit.commit?.author?.name ?? commit.author?.login ?? 'Unknown author',
+          date: commit.commit?.author?.date ?? '',
+          url: commit.html_url,
+        }));
+        setCommits(mapped);
+        finishOperation(operationId, 'success');
+        return true;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Failed to load commits';
+        finishOperation(operationId, 'error', message);
+        logStatus(message, 'error');
+        return false;
+      } finally {
+        setIsLoadingCommits(false);
+      }
     },
-    {
-      icon: Shield,
-      label: 'Secure',
-      variant: 'outline' as const,
-      color: 'text-success'
+    [branch, finishOperation, logStatus, owner, repo, request, startOperation]
+  );
+
+  const loadContents = useCallback(
+    async (path: string, options?: { branchOverride?: string }) => {
+      if (!owner || !repo) return false;
+      const activeBranch = options?.branchOverride ?? branch;
+      if (!activeBranch) return false;
+
+      const operationId = startOperation(`Loading ${path || 'repository root'}`);
+      setIsLoadingContents(true);
+      try {
+        const encodedPath = path ? `/${encodePath(path)}` : '';
+        const data = await request<GitHubContent | GitHubContent[]>(
+          `/repos/${owner}/${repo}/contents${encodedPath}?ref=${encodeURIComponent(activeBranch)}`
+        );
+
+        const items = Array.isArray(data) ? data : data ? [data] : [];
+        const sorted = [...items].sort((a, b) => {
+          if (a.type === b.type) {
+            return a.name.localeCompare(b.name);
+          }
+          return a.type === 'dir' ? -1 : 1;
+        });
+
+        setContents(sorted);
+        setCurrentPath(path);
+        finishOperation(operationId, 'success');
+        return true;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Failed to load repository contents';
+        finishOperation(operationId, 'error', message);
+        logStatus(message, 'error');
+        return false;
+      } finally {
+        setIsLoadingContents(false);
+      }
+    },
+    [branch, finishOperation, logStatus, owner, repo, request, startOperation]
+  );
+
+  const loadFile = useCallback(
+    async (path: string) => {
+      if (!owner || !repo || !branch) return;
+      const operationId = startOperation(`Opening ${path}`);
+
+      try {
+        const encodedPath = encodePath(path);
+        const data = await request<GitHubFileResponse>(
+          `/repos/${owner}/${repo}/contents/${encodedPath}?ref=${encodeURIComponent(branch)}`
+        );
+
+        if (!data || data.type !== 'file') {
+          throw new Error('Selected item is not a file');
+        }
+
+        const decoded = decodeContent(data.content);
+        setSelectedFile({
+          path: data.path,
+          sha: data.sha,
+          content: decoded,
+          originalContent: decoded,
+        });
+        setCommitMessage(`Update ${data.name}`);
+        setTrackedEdits((prev) => ({
+          ...prev,
+          [data.path]: prev[data.path] ?? { isDirty: false, lineDelta: 0 },
+        }));
+        finishOperation(operationId, 'success');
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Failed to load file';
+        finishOperation(operationId, 'error', message);
+        logStatus(message, 'error');
+      }
+    },
+    [branch, finishOperation, logStatus, owner, repo, request, startOperation]
+  );
+
+  const handleConnect = useCallback(async () => {
+    if (!repoInput.includes('/')) {
+      toast({
+        title: 'Repository format',
+        description: 'Use the format owner/repository.',
+        variant: 'destructive',
+      });
+      return;
     }
-  ], [performance.cpu, stats.knowledgeNodes, stats.learningScore]);
 
-  const knowledgeCards = useMemo(() => [
-    {
-      title: 'Total Nodes',
-      value: stats.knowledgeNodes,
-      icon: Network,
-      color: 'text-accent'
-    },
-    {
-      title: 'Learning Progress',
-      value: `${stats.learningScore}%`,
-      icon: TrendingUp,
-      color: 'text-success'
-    },
-    {
-      title: 'Autonomy Level',
-      value: `${stats.autonomyLevel}%`,
-      icon: Target,
-      color: 'text-primary'
+    const [ownerInput, repoName] = repoInput.split('/').map((part) => part.trim());
+    if (!ownerInput || !repoName) {
+      toast({
+        title: 'Repository format',
+        description: 'Use the format owner/repository.',
+        variant: 'destructive',
+      });
+      return;
     }
-  ], [stats]);
+
+    const operationId = startOperation(`Connecting to ${ownerInput}/${repoName}`);
+    setConnectionState('connecting');
+    logStatus(`Connecting to ${ownerInput}/${repoName}...`);
+
+    try {
+      const repository = await request<RepoInfo>(`/repos/${ownerInput}/${repoName}`);
+      const branchData = await request<BranchInfo[]>(`/repos/${ownerInput}/${repoName}/branches?per_page=100`);
+      const branchNames = (branchData ?? []).map((item) => item.name);
+      const defaultBranch = branchNames.includes(repository.default_branch)
+        ? repository.default_branch
+        : branchNames[0];
+
+      setOwner(ownerInput);
+      setRepo(repoName);
+      setRepoInfo(repository);
+      setBranches(branchNames);
+      setBranch(defaultBranch ?? '');
+      setConnectionState('connected');
+      resetSessionTracking();
+      logStatus(`Connected to ${repository.full_name}`, 'success');
+
+      const branchToLoad = defaultBranch ?? branchNames[0] ?? repository.default_branch;
+      const [contentsLoaded, commitsLoaded] = await Promise.all([
+        loadContents('', { branchOverride: branchToLoad }),
+        loadCommits(branchToLoad),
+      ]);
+      const lineCountLoaded = await calculateRepositoryLineCount(branchToLoad);
+
+      if (contentsLoaded && commitsLoaded && lineCountLoaded) {
+        finishOperation(operationId, 'success');
+      } else {
+        finishOperation(operationId, 'error', 'Some repository data failed to load completely');
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to connect to repository';
+      logStatus(message, 'error');
+      setConnectionState('error');
+      finishOperation(operationId, 'error', message);
+      toast({ title: 'GitHub error', description: message, variant: 'destructive' });
+    }
+  }, [calculateRepositoryLineCount, loadCommits, loadContents, repoInput, request, resetSessionTracking, startOperation, toast]);
+
+  const handleSelectBranch = useCallback(
+    async (value: string) => {
+      setBranch(value);
+      setSelectedFile(null);
+      setCommitMessage('');
+      resetSessionTracking();
+      const [contentsLoaded, commitsLoaded] = await Promise.all([
+        loadContents(currentPath, { branchOverride: value }),
+        loadCommits(value),
+      ]);
+      const lineCountLoaded = await calculateRepositoryLineCount(value);
+      if (contentsLoaded && commitsLoaded && lineCountLoaded) {
+        logStatus(`Switched to branch ${value}`, 'success');
+      }
+    },
+    [calculateRepositoryLineCount, currentPath, loadCommits, loadContents, logStatus, resetSessionTracking]
+  );
+
+  const handleOpen = useCallback(
+    async (item: GitHubContent) => {
+      if (item.type === 'dir') {
+        const nextPath = currentPath ? `${currentPath}/${item.name}` : item.name;
+        await loadContents(nextPath);
+        return;
+      }
+      await loadFile(item.path);
+    },
+    [currentPath, loadContents, loadFile]
+  );
+
+  const handleNavigateUp = useCallback(async () => {
+    if (!currentPath) return;
+    const segments = currentPath.split('/');
+    segments.pop();
+    const nextPath = segments.join('/');
+    await loadContents(nextPath);
+  }, [currentPath, loadContents]);
+
+  const handleFileChange = useCallback((value: string) => {
+    setSelectedFile((prev) => {
+      if (!prev) return prev;
+      const next = { ...prev, content: value };
+      setTrackedEdits((prevEdits) => ({
+        ...prevEdits,
+        [prev.path]: {
+          isDirty: value !== prev.originalContent,
+          lineDelta: countLines(value) - countLines(prev.originalContent),
+        },
+      }));
+      return next;
+    });
+  }, []);
+
+  const handleSave = useCallback(async () => {
+    if (!selectedFile || !owner || !repo || !branch) return;
+    if (!token.trim()) {
+      toast({
+        title: 'Authentication required',
+        description: 'Provide a GitHub personal access token to commit changes.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    const message = commitMessage.trim() || `Update ${selectedFile.path}`;
+    const operationId = startOperation(`Committing ${selectedFile.path}`);
+    setIsSaving(true);
+    logStatus(`Committing ${selectedFile.path} to ${branch}...`);
+
+    const trackedDelta = trackedEdits[selectedFile.path]?.lineDelta ?? 0;
+
+    try {
+      const body = {
+        message,
+        content: encodeContent(selectedFile.content),
+        sha: selectedFile.sha,
+        branch,
+      };
+
+      const response = await request<{ content?: { sha: string } }>(
+        `/repos/${owner}/${repo}/contents/${encodePath(selectedFile.path)}`,
+        {
+          method: 'PUT',
+          body: JSON.stringify(body),
+        }
+      );
+
+      const nextSha = response?.content?.sha ?? selectedFile.sha;
+      setSelectedFile((prev) =>
+        prev
+          ? {
+              ...prev,
+              sha: nextSha,
+              originalContent: prev.content,
+            }
+          : prev
+      );
+      setCommitMessage('');
+      setTrackedEdits((prev) => ({
+        ...prev,
+        [selectedFile.path]: { isDirty: false, lineDelta: 0 },
+      }));
+      setCommittedPaths((prev) => (prev.includes(selectedFile.path) ? prev : [...prev, selectedFile.path]));
+      setSessionLinesChanged((prev) => prev + Math.abs(trackedDelta));
+      logStatus(`Committed ${selectedFile.path}`, 'success');
+      finishOperation(operationId, 'success');
+      toast({ title: 'Commit created', description: `${selectedFile.path} updated on ${branch}` });
+      await Promise.all([loadContents(currentPath), loadCommits()]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to commit changes';
+      logStatus(message, 'error');
+      finishOperation(operationId, 'error', message);
+      toast({ title: 'Commit failed', description: message, variant: 'destructive' });
+    } finally {
+      setIsSaving(false);
+    }
+  }, [branch, commitMessage, currentPath, loadCommits, loadContents, logStatus, owner, repo, request, selectedFile, startOperation, toast, token, trackedEdits, finishOperation]);
+
+  const isConnected = connectionState === 'connected' && !!repoInfo;
+  const isDirty = selectedFile ? selectedFile.content !== selectedFile.originalContent : false;
+  const sortedContents = useMemo(() => contents, [contents]);
+  const breadcrumbs = useMemo(() => {
+    if (!currentPath) return [] as string[];
+    const segments = currentPath.split('/');
+    return segments.map((_, index) => segments.slice(0, index + 1).join('/'));
+  }, [currentPath]);
+  const runningOperations = useMemo(
+    () => operations.filter((operation) => operation.status === 'running'),
+    [operations]
+  );
+  const dirtyFilesCount = useMemo(
+    () => Object.values(trackedEdits).filter((entry) => entry.isDirty).length,
+    [trackedEdits]
+  );
+  const pendingLines = useMemo(
+    () =>
+      Object.values(trackedEdits).reduce(
+        (accumulator, entry) => (entry.isDirty ? accumulator + Math.abs(entry.lineDelta) : accumulator),
+        0
+      ),
+    [trackedEdits]
+  );
+  const operationsToDisplay = useMemo(() => operations.slice(0, 8), [operations]);
 
   return (
-    <div className="min-h-screen">
-      {/* Header */}
-      <header className="glass border-b border-border/50 sticky top-0 z-50">
-        <div className="container mx-auto px-6 py-4">
-          <div className="flex items-center justify-between">
+    <div className="space-y-6">
+      <Card className="p-6">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div className="space-y-2">
             <div className="flex items-center gap-3">
-              <div className="relative">
-                <Brain className="w-10 h-10 text-primary" />
-                <Sparkles className="w-4 h-4 text-secondary absolute -top-1 -right-1 animate-pulse-glow" />
-              </div>
+              <Link2 className="h-8 w-8 text-primary" />
               <div>
-                <h1 className="text-2xl font-bold bg-gradient-to-r from-primary to-secondary bg-clip-text text-transparent">
-                  Autonomous AI Agent
-                </h1>
-                <p className="text-sm text-muted-foreground">Self-Learning Development System</p>
+                <h1 className="text-3xl font-bold tracking-tight">GitHub Automation Workspace</h1>
+                <p className="text-sm text-muted-foreground">Agent session: {agentName}</p>
               </div>
             </div>
-            
-            <div className="flex items-center gap-3" role="status" aria-label="System status">
-              {statusBadges.map(({ icon: Icon, label, variant, color }, index) => (
-                <Badge key={index} variant={variant} className={`gap-2 glass ${color}`}>
-                  <Icon className="w-4 h-4" />
-                  <span>{label}</span>
-                </Badge>
-              ))}
+            <p className="max-w-2xl text-muted-foreground">
+              Connect to a GitHub repository, inspect the file system, edit code, and push commits directly from the
+              browser. All operations use the live GitHub REST API — no simulations.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant="secondary" className="gap-2">
+              <Bot className="h-4 w-4" />
+              {agentName}
+            </Badge>
+            {isConnected && (
+              <Badge variant="outline" className="gap-2">
+                <GitBranch className="h-4 w-4" />
+                {branch}
+              </Badge>
+            )}
+            {isConnected && (
+              <Badge variant="outline" className="gap-2">
+                <GitCommit className="h-4 w-4" />
+                {commits[0]?.sha.slice(0, 7) ?? '—'}
+              </Badge>
+            )}
+            {runningOperations.length > 0 && (
+              <Badge variant="outline" className="gap-2">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                {runningOperations.length} running
+              </Badge>
+            )}
+          </div>
+        </div>
+      </Card>
+
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
+        <div className="space-y-6">
+          <Card className="p-6">
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <Label htmlFor={`repo-${agentId}`}>Repository (owner/name)</Label>
+                <Input
+                  id={`repo-${agentId}`}
+                  placeholder="openai/openai"
+                  value={repoInput}
+                  onChange={(event) => setRepoInput(event.target.value)}
+                  autoComplete="off"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor={`token-${agentId}`}>Personal access token (optional for read-only)</Label>
+                <Input
+                  id={`token-${agentId}`}
+                  type="password"
+                  placeholder="ghp_..."
+                  value={token}
+                  onChange={(event) => setToken(event.target.value)}
+                  autoComplete="off"
+                />
+              </div>
             </div>
+
+            <div className="mt-4 flex flex-wrap items-center gap-3">
+              <Button onClick={handleConnect} disabled={connectionState === 'connecting'}>
+                {connectionState === 'connecting' ? (
+                  <span className="inline-flex items-center gap-2">
+                    <Loader2 className="h-4 w-4 animate-spin" /> Connecting…
+                  </span>
+                ) : (
+                  'Connect to GitHub'
+                )}
+              </Button>
+
+              {isConnected && (
+                <div className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
+                  <span className="inline-flex items-center gap-2">
+                    <CheckCircle className="h-4 w-4 text-success" /> Connected to {repoInfo?.full_name}
+                  </span>
+                  <span className="inline-flex items-center gap-2">
+                    <RefreshCw className="h-4 w-4" /> Last push {repoInfo?.pushed_at ? formatDate(repoInfo.pushed_at) : '—'}
+                  </span>
+                </div>
+              )}
+            </div>
+          </Card>
+
+          {isConnected && (
+            <Card className="p-6">
+              <div className="flex items-center gap-2">
+                <Folder className="h-5 w-5 text-primary" />
+                <h2 className="text-lg font-semibold">Repository explorer</h2>
+              </div>
+
+              <div className="mt-4 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-1 text-primary hover:underline"
+                  onClick={() => loadContents('')}
+                >
+                  <ArrowLeft className="h-4 w-4" /> Root
+                </button>
+                {breadcrumbs.map((crumb, index) => (
+                  <button
+                    key={crumb}
+                    type="button"
+                    className="inline-flex items-center gap-1 text-primary hover:underline"
+                    onClick={() => loadContents(crumb)}
+                  >
+                    {index === breadcrumbs.length - 1 ? crumb.split('/').pop() : `${crumb.split('/').pop()} /`}
+                  </button>
+                ))}
+              </div>
+
+              <div className="mt-4 flex flex-col gap-4 lg:flex-row">
+                <div className="w-full lg:w-64">
+                  <Label htmlFor={`branch-${agentId}`}>Branch</Label>
+                  <select
+                    id={`branch-${agentId}`}
+                    className="mt-2 w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+                    value={branch}
+                    onChange={(event) => handleSelectBranch(event.target.value)}
+                  >
+                    {branches.map((item) => (
+                      <option key={item} value={item}>
+                        {item}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="flex-1">
+                  <Label>Contents</Label>
+                  <ScrollArea className="mt-2 h-[320px] rounded-md border border-border/60">
+                    {isLoadingContents ? (
+                      <div className="flex h-full items-center justify-center text-muted-foreground">
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Loading contents…
+                      </div>
+                    ) : sortedContents.length === 0 ? (
+                      <div className="flex h-full items-center justify-center text-muted-foreground">
+                        Repository is empty.
+                      </div>
+                    ) : (
+                      <div className="divide-y divide-border/60">
+                        {currentPath && (
+                          <button
+                            className="flex w-full items-center gap-3 p-3 text-left hover:bg-muted/40"
+                            onClick={handleNavigateUp}
+                          >
+                            <Folder className="h-5 w-5" />
+                            <div>
+                              <p className="font-medium">.. (up)</p>
+                              <p className="text-xs text-muted-foreground">Navigate to parent directory</p>
+                            </div>
+                          </button>
+                        )}
+                        {sortedContents.map((item) => (
+                          <button
+                            key={item.sha}
+                            className="flex w-full items-center gap-3 p-3 text-left hover:bg-muted/40"
+                            onClick={() => handleOpen(item)}
+                          >
+                            {item.type === 'dir' ? (
+                              <Folder className="h-5 w-5 text-primary" />
+                            ) : (
+                              <FileCode className="h-5 w-5 text-primary" />
+                            )}
+                            <div>
+                              <p className="font-medium">{item.name}</p>
+                              <p className="text-xs text-muted-foreground">
+                                {item.type === 'dir' ? 'Directory' : `${item.size} bytes`}
+                              </p>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </ScrollArea>
+                </div>
+              </div>
+            </Card>
+          )}
+
+          {isConnected && (
+            <Card className="border border-border/60 bg-muted/10 p-4">
+              {selectedFile ? (
+                <div className="space-y-4">
+                  <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                    <div>
+                      <h3 className="text-lg font-semibold">{selectedFile.path}</h3>
+                      <p className="text-xs text-muted-foreground">SHA: {selectedFile.sha}</p>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      {isDirty && <Badge variant="destructive">Unsaved changes</Badge>}
+                      {trackedEdits[selectedFile.path]?.lineDelta && (
+                        <Badge variant="outline" className="gap-1">
+                          <Sigma className="h-3 w-3" />
+                          {trackedEdits[selectedFile.path]?.lineDelta > 0 ? '+' : ''}
+                          {trackedEdits[selectedFile.path]?.lineDelta}
+                        </Badge>
+                      )}
+                    </div>
+                  </div>
+
+                  <Textarea
+                    className="h-[240px] font-mono text-sm"
+                    value={selectedFile.content}
+                    onChange={(event) => handleFileChange(event.target.value)}
+                  />
+
+                  <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_220px]">
+                    <div className="space-y-2">
+                      <Label htmlFor={`commit-message-${agentId}`}>Commit message</Label>
+                      <Input
+                        id={`commit-message-${agentId}`}
+                        placeholder={`Update ${selectedFile.path}`}
+                        value={commitMessage}
+                        onChange={(event) => setCommitMessage(event.target.value)}
+                      />
+                    </div>
+                    <div className="flex items-end gap-2">
+                      <Button className="w-full" onClick={handleSave} disabled={!isDirty || isSaving}>
+                        {isSaving ? (
+                          <span className="inline-flex items-center gap-2">
+                            <Loader2 className="h-4 w-4 animate-spin" /> Saving…
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-2">
+                            <Save className="h-4 w-4" /> Commit changes
+                          </span>
+                        )}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="w-full"
+                        onClick={() => calculateRepositoryLineCount()}
+                        disabled={lineCountStatus === 'loading'}
+                      >
+                        {lineCountStatus === 'loading' ? (
+                          <span className="inline-flex items-center gap-2">
+                            <Loader2 className="h-4 w-4 animate-spin" /> Recounting…
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-2">
+                            <Sigma className="h-4 w-4" /> Recalculate lines
+                          </span>
+                        )}
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex h-full flex-col items-center justify-center gap-3 text-center text-muted-foreground">
+                  <FileCode className="h-10 w-10" />
+                  <p>Select a file to start editing.</p>
+                  <p className="text-xs">Changes are committed directly to GitHub when you save.</p>
+                </div>
+              )}
+            </Card>
+          )}
+        </div>
+
+        <div className="space-y-6">
+          <Card className="p-6">
+            <div className="flex items-center gap-2">
+              <Loader2 className="h-5 w-5 text-primary" />
+              <h2 className="text-lg font-semibold">Live operations</h2>
+            </div>
+
+            <div className="mt-4">
+              {operationsToDisplay.length === 0 ? (
+                <div className="flex h-[180px] items-center justify-center text-muted-foreground">
+                  No operations yet. Interact with the repository to see live activity.
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {operationsToDisplay.map((operation) => {
+                    const isRunning = operation.status === 'running';
+                    const statusLabel =
+                      operation.status === 'running' ? 'Running' : operation.status === 'success' ? 'Completed' : 'Error';
+                    const Icon = isRunning ? Loader2 : operation.status === 'success' ? CheckCircle : AlertCircle;
+                    const progressPercentage = operation.progress?.total
+                      ? Math.min(100, Math.round((operation.progress.current / operation.progress.total) * 100))
+                      : null;
+
+                    return (
+                      <div key={operation.id} className="rounded-lg border border-border/60 p-3 text-sm">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="flex items-center gap-2">
+                            <Icon
+                              className={`h-4 w-4 ${
+                                operation.status === 'success'
+                                  ? 'text-success'
+                                  : operation.status === 'error'
+                                  ? 'text-destructive'
+                                  : 'text-primary'
+                              } ${isRunning ? 'animate-spin' : ''}`}
+                            />
+                            <div>
+                              <p className="font-medium">{operation.label}</p>
+                              <p className="text-xs text-muted-foreground">{formatDate(operation.startedAt)}</p>
+                            </div>
+                          </div>
+                          <Badge variant="outline">{statusLabel}</Badge>
+                        </div>
+                        {operation.message && operation.status === 'error' && (
+                          <p className="mt-2 text-xs text-destructive">{operation.message}</p>
+                        )}
+                        {progressPercentage !== null && (
+                          <div className="mt-3 space-y-1">
+                            <Progress value={progressPercentage} />
+                            <p className="text-xs text-muted-foreground">
+                              {operation.progress?.current ?? 0}/{operation.progress?.total ?? 0} items processed
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </Card>
+
+          <Card className="p-6">
+            <div className="flex items-center gap-2">
+              <FileDiff className="h-5 w-5 text-primary" />
+              <h2 className="text-lg font-semibold">Change metrics</h2>
+            </div>
+
+            <div className="mt-4 grid gap-4 md:grid-cols-2">
+              <div className="rounded-lg border border-border/60 p-4">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-muted-foreground">Dirty files</span>
+                  <Badge variant="outline">{dirtyFilesCount}</Badge>
+                </div>
+                <p className="mt-2 text-2xl font-semibold">{dirtyFilesCount}</p>
+                <p className="text-xs text-muted-foreground">Files with unsaved changes</p>
+              </div>
+
+              <div className="rounded-lg border border-border/60 p-4">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-muted-foreground">Files committed</span>
+                  <Badge variant="outline">{committedPaths.length}</Badge>
+                </div>
+                <p className="mt-2 text-2xl font-semibold">{committedPaths.length}</p>
+                <p className="text-xs text-muted-foreground">Committed during this session</p>
+              </div>
+
+              <div className="rounded-lg border border-border/60 p-4">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-muted-foreground">Lines committed</span>
+                  <Badge variant="outline">{sessionLinesChanged}</Badge>
+                </div>
+                <p className="mt-2 text-2xl font-semibold">{sessionLinesChanged}</p>
+                <p className="text-xs text-muted-foreground">Absolute line delta pushed via this agent</p>
+              </div>
+
+              <div className="rounded-lg border border-border/60 p-4">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-muted-foreground">Pending line changes</span>
+                  <Badge variant="outline">{pendingLines}</Badge>
+                </div>
+                <p className="mt-2 text-2xl font-semibold">{pendingLines}</p>
+                <p className="text-xs text-muted-foreground">Unsaved lines waiting to commit</p>
+              </div>
+            </div>
+
+            <div className="mt-4 rounded-lg border border-dashed border-border/60 p-4">
+              <div className="flex items-center justify-between">
+                <span className="inline-flex items-center gap-2 text-sm text-muted-foreground">
+                  <Sigma className="h-4 w-4" /> Estimated repository line count
+                </span>
+                {lineCountStatus === 'loading' ? (
+                  <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                ) : lineCountStatus === 'error' ? (
+                  <AlertCircle className="h-4 w-4 text-destructive" />
+                ) : (
+                  <CheckCircle className="h-4 w-4 text-success" />
+                )}
+              </div>
+              <p className="mt-2 text-2xl font-semibold">
+                {totalLineCount !== null ? totalLineCount.toLocaleString() : '—'}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                {lineCountStatus === 'error' && lineCountError
+                  ? lineCountError
+                  : 'Calculated from the most recent branch snapshot (limited to first 400 files for performance).'}
+              </p>
+            </div>
+          </Card>
+
+          <Card className="p-6">
+            <div className="flex items-center gap-2">
+              <GitCommit className="h-5 w-5 text-primary" />
+              <h2 className="text-lg font-semibold">Recent commits</h2>
+            </div>
+
+            <ScrollArea className="mt-4 h-[260px]">
+              {isLoadingCommits ? (
+                <div className="flex h-full items-center justify-center text-muted-foreground">
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Loading commits…
+                </div>
+              ) : commits.length === 0 ? (
+                <div className="flex h-full items-center justify-center text-muted-foreground">No commits retrieved yet.</div>
+              ) : (
+                <div className="space-y-4">
+                  {commits.map((commit) => (
+                    <div key={commit.sha} className="rounded-lg border border-border/60 p-3 text-sm">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-mono text-xs">{commit.sha.slice(0, 7)}</span>
+                        <a
+                          href={commit.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-1 text-primary hover:underline"
+                        >
+                          View <ExternalLink className="h-3 w-3" />
+                        </a>
+                      </div>
+                      <p className="mt-2 font-medium">{commit.message}</p>
+                      <p className="text-xs text-muted-foreground">{commit.authorName} • {formatDate(commit.date)}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </ScrollArea>
+          </Card>
+
+          <Card className="p-6">
+            <div className="flex items-center gap-2">
+              <Activity className="h-5 w-5 text-primary" />
+              <h2 className="text-lg font-semibold">Activity log</h2>
+            </div>
+
+            <ScrollArea className="mt-4 h-[260px]">
+              {statusLog.length === 0 ? (
+                <div className="flex h-full items-center justify-center text-muted-foreground">
+                  Interact with the repository to see live activity here.
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {statusLog.map((entry) => (
+                    <div key={entry.id} className="rounded-lg border border-border/60 p-3 text-sm">
+                      <div className="flex items-start gap-3">
+                        {entry.level === 'success' ? (
+                          <CheckCircle className="mt-1 h-4 w-4 text-success" />
+                        ) : entry.level === 'error' ? (
+                          <AlertCircle className="mt-1 h-4 w-4 text-destructive" />
+                        ) : (
+                          <Clock className="mt-1 h-4 w-4 text-muted-foreground" />
+                        )}
+                        <div>
+                          <p className="font-medium">{entry.message}</p>
+                          <p className="text-xs text-muted-foreground">{formatDate(entry.timestamp)}</p>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </ScrollArea>
+          </Card>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+interface AgentDescriptor {
+  id: string;
+  name: string;
+}
+
+export const AutonomousAgent: React.FC = () => {
+  const [agents, setAgents] = useState<AgentDescriptor[]>(() => {
+    const initialId = generateId();
+    return [{ id: initialId, name: 'Agent 1' }];
+  });
+  const [activeAgentId, setActiveAgentId] = useState(() => {
+    const initialId = agents[0]?.id ?? '';
+    return initialId;
+  });
+
+  useEffect(() => {
+    if (agents.length === 0) {
+      const fallbackId = generateId();
+      setAgents([{ id: fallbackId, name: 'Agent 1' }]);
+      setActiveAgentId(fallbackId);
+      return;
+    }
+
+    if (!agents.some((agent) => agent.id === activeAgentId)) {
+      setActiveAgentId(agents[agents.length - 1]?.id ?? agents[0].id);
+    }
+  }, [activeAgentId, agents]);
+
+  const handleAddAgent = useCallback(() => {
+    setAgents((prev) => {
+      const next = [...prev, { id: generateId(), name: `Agent ${prev.length + 1}` }];
+      setActiveAgentId(next[next.length - 1].id);
+      return next;
+    });
+  }, []);
+
+  const handleRemoveAgent = useCallback(
+    (id: string) => {
+      setAgents((prev) => {
+        if (prev.length === 1) {
+          return prev;
+        }
+        const next = prev.filter((agent) => agent.id !== id);
+        if (next.length > 0 && !next.some((agent) => agent.id === activeAgentId)) {
+          setActiveAgentId(next[next.length - 1].id);
+        }
+        return next;
+      });
+    },
+    [activeAgentId]
+  );
+
+  return (
+    <div className="min-h-screen bg-background">
+      <header className="border-b border-border/50 bg-background/95 backdrop-blur">
+        <div className="container mx-auto px-6 py-8">
+          <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+            <div>
+              <h1 className="text-3xl font-bold tracking-tight">Autonomous Agents Control Center</h1>
+              <p className="mt-2 max-w-2xl text-muted-foreground">
+                Spin up multiple GitHub-connected agents, monitor their live operations, and keep an eye on repository
+                impact in real time.
+              </p>
+            </div>
+            <Badge variant="outline" className="gap-2">
+              <Bot className="h-4 w-4" /> {agents.length} active {agents.length === 1 ? 'agent' : 'agents'}
+            </Badge>
           </div>
         </div>
       </header>
 
-      {/* Main Content */}
-      <main className="container mx-auto px-6 py-6">
-        {/* Error Display */}
-        {error && (
-          <Card className="glass border-destructive/50 bg-destructive/10 mb-6 p-4">
-            <div className="flex items-center gap-3">
-              <AlertTriangle className="w-5 h-5 text-destructive" />
-              <div>
-                <p className="font-semibold text-destructive">Error</p>
-                <p className="text-sm text-destructive/80">{error}</p>
-              </div>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setError(null)}
-                className="ml-auto"
-                aria-label="Dismiss error"
-              >
-                <XCircle className="w-4 h-4" />
-              </Button>
-            </div>
-          </Card>
-        )}
-
-        {/* Command Input */}
-        <Card className="glass glow mb-6 p-6">
-          <div className="flex gap-4">
-            <Input
-              value={instruction}
-              onChange={(e) => setInstruction(e.target.value)}
-              onKeyPress={handleKeyPress}
-              placeholder="Enter your instruction for the AI agent..."
-              className="flex-1 bg-input/50 border-border/50 focus:border-primary text-lg"
-              disabled={isRunning}
-              aria-label="AI instruction input"
-              autoComplete="off"
-            />
-            <Button 
-              onClick={isRunning ? handleStopTask : handleExecuteTask}
-              disabled={!instruction.trim() && !isRunning}
-              className={`${isRunning ? 'bg-destructive hover:bg-destructive/90' : 'bg-primary hover:bg-primary/90'} glow-strong gap-2 px-8`}
-              aria-label={isRunning ? 'Stop task execution' : 'Execute task'}
-            >
-              {isRunning ? (
-                <>
-                  <Pause className="w-5 h-5" />
-                  Stop
-                </>
-              ) : (
-                <>
-                  <Play className="w-5 h-5" />
-                  Execute
-                </>
-              )}
+      <main className="container mx-auto px-6 py-8">
+        <Tabs value={activeAgentId} onValueChange={setActiveAgentId} className="space-y-6">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <TabsList className="flex flex-wrap items-center gap-2">
+              {agents.map((agent) => (
+                <TabsTrigger key={agent.id} value={agent.id} className="relative pr-8">
+                  {agent.name}
+                  {agents.length > 1 && (
+                    <button
+                      type="button"
+                      className="absolute right-1 top-1/2 -translate-y-1/2 rounded-full p-1 text-muted-foreground hover:text-foreground"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        handleRemoveAgent(agent.id);
+                      }}
+                      aria-label={`Close ${agent.name}`}
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  )}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+            <Button variant="outline" size="sm" className="inline-flex items-center gap-2" onClick={handleAddAgent}>
+              <Plus className="h-4 w-4" /> Add agent
             </Button>
           </div>
-          
-          {(isRunning || isLoading) && (
-            <div className="mt-4 flex items-center gap-3 text-primary animate-slide-up">
-              <div className="w-2 h-2 bg-primary rounded-full animate-pulse-glow" />
-              <span className="text-sm">AI agent is processing your request...</span>
-            </div>
-          )}
-        </Card>
 
-        {/* Stats Grid */}
-        <StatsGrid stats={stats} performance={performance} />
-
-        {/* Tabs for Different Views */}
-        <Tabs defaultValue="activity" className="mt-6">
-          <TabsList className="glass" role="tablist">
-            <TabsTrigger value="activity" className="gap-2" role="tab">
-              <Activity className="w-4 h-4" />
-              Activity
-            </TabsTrigger>
-            <TabsTrigger value="metrics" className="gap-2" role="tab">
-              <BarChart3 className="w-4 h-4" />
-              Metrics
-            </TabsTrigger>
-            <TabsTrigger value="terminal" className="gap-2" role="tab">
-              <Terminal className="w-4 h-4" />
-              Terminal
-            </TabsTrigger>
-            <TabsTrigger value="knowledge" className="gap-2" role="tab">
-              <Brain className="w-4 h-4" />
-              Knowledge
-            </TabsTrigger>
-          </TabsList>
-
-          <TabsContent value="activity" className="mt-4" role="tabpanel">
-            <ActivityFeed activities={activities} />
-          </TabsContent>
-
-          <TabsContent value="metrics" className="mt-4" role="tabpanel">
-            <MetricsChart performance={performance} stats={stats} />
-          </TabsContent>
-
-          <TabsContent value="terminal" className="mt-4" role="tabpanel">
-            <TerminalPanel output={terminalOutput} />
-          </TabsContent>
-
-          <TabsContent value="knowledge" className="mt-4" role="tabpanel">
-            <Card className="glass p-6">
-              <div className="flex items-center gap-3 mb-6">
-                <Brain className="w-6 h-6 text-primary" />
-                <h3 className="text-xl font-semibold">Knowledge Graph</h3>
-              </div>
-              
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-                {knowledgeCards.map(({ title, value, icon: Icon, color }, index) => (
-                  <Card key={index} className="bg-muted/30 p-4 border-border/50">
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-sm text-muted-foreground">{title}</span>
-                      <Icon className={`w-4 h-4 ${color}`} />
-                    </div>
-                    <p className={`text-2xl font-bold ${color}`}>{value}</p>
-                  </Card>
-                ))}
-              </div>
-
-              <div>
-                <h4 className="text-sm font-semibold mb-3 flex items-center gap-2">
-                  <Lightbulb className="w-4 h-4 text-warning" />
-                  Recent Learnings
-                </h4>
-                <div className="space-y-2">
-                  {RECENT_LEARNINGS.slice(0, 3).map((learning, i) => (
-                    <div 
-                      key={learning} 
-                      className="flex items-center gap-2 p-2 rounded bg-muted/20 text-sm animate-slide-up" 
-                      style={{ animationDelay: `${i * 100}ms` }}
-                    >
-                      <CheckCircle className="w-4 h-4 text-success flex-shrink-0" />
-                      <span>{learning}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </Card>
-          </TabsContent>
+          {agents.map((agent) => (
+            <TabsContent key={agent.id} value={agent.id} className="space-y-6">
+              <AgentWorkspace agentId={agent.id} agentName={agent.name} />
+            </TabsContent>
+          ))}
         </Tabs>
       </main>
     </div>
@@ -463,3 +1279,4 @@ export const AutonomousAgent: React.FC = () => {
 };
 
 export default AutonomousAgent;
+
