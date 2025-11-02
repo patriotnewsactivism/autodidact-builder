@@ -1,1 +1,4 @@
 project_id = "uwqndlzadcyvwwzftslc"
+
+[functions.process-task]
+verify_jwt = false

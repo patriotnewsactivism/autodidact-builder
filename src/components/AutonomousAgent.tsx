@@ -1,92 +1,46 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState } from 'react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import { 
-  Brain, Activity, Play, Pause, Cpu, Network, Shield, 
-  Terminal, Code, TrendingUp, Zap, CheckCircle, XCircle,
-  Clock, AlertTriangle, FileCode, GitBranch, BarChart3,
-  Sparkles, Target, Lightbulb, Database, CloudCog
+  Brain, Activity, Play, Cpu, Network, Shield, 
+  Terminal, BarChart3, Zap, Target, Lightbulb,
+  CheckCircle, TrendingUp, LogOut
 } from 'lucide-react';
 import { StatsGrid } from './StatsGrid';
 import { ActivityFeed } from './ActivityFeed';
 import { TerminalPanel } from './TerminalPanel';
 import { MetricsChart } from './MetricsChart';
+import { useAgentData } from '@/hooks/useAgentData';
+import { useAuth } from '@/hooks/useAuth';
 
 export const AutonomousAgent = () => {
-  const [isRunning, setIsRunning] = useState(false);
+  const { user, signOut } = useAuth();
+  const { activities, stats, executeTask } = useAgentData(user?.id);
   const [instruction, setInstruction] = useState('');
-  const [activities, setActivities] = useState<any[]>([]);
-  const [stats, setStats] = useState({
-    tasksCompleted: 0,
-    linesChanged: 0,
-    aiDecisions: 0,
-    learningScore: 75,
-    knowledgeNodes: 1247,
-    autonomyLevel: 92
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [performance] = useState({
+    cpu: 45,
+    memory: 62,
+    throughput: 850,
+    latency: 23
   });
-  const [performance, setPerformance] = useState({
-    cpu: 0,
-    memory: 0,
-    throughput: 0,
-    latency: 0
-  });
-  const [terminalOutput, setTerminalOutput] = useState<string[]>([]);
-
-  // Simulate real-time metrics
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setPerformance(prev => ({
-        cpu: Math.min(100, Math.max(0, prev.cpu + (Math.random() - 0.5) * 20)),
-        memory: Math.min(100, Math.max(0, prev.memory + (Math.random() - 0.5) * 15)),
-        throughput: Math.floor(Math.random() * 1000),
-        latency: Math.floor(Math.random() * 100)
-      }));
-    }, 2000);
-
-    return () => clearInterval(interval);
-  }, []);
+  const [terminalOutput] = useState<string[]>([
+    'Autonomous AI Agent initialized...',
+    'Real-time learning enabled',
+    'Connected to AI processing engine',
+    'System ready for autonomous operation',
+  ]);
 
   const handleExecuteTask = async () => {
     if (!instruction.trim()) return;
     
-    setIsRunning(true);
-    const task = instruction;
+    setIsProcessing(true);
+    await executeTask(instruction);
     setInstruction('');
-
-    // Add activity
-    setActivities(prev => [{
-      type: 'ai',
-      message: `Processing: ${task}`,
-      timestamp: new Date(),
-      status: 'progress'
-    }, ...prev]);
-
-    // Simulate terminal output
-    setTerminalOutput(prev => [...prev, `> ${task}`, 'Analyzing request...', 'Planning execution strategy...']);
-
-    // Simulate AI processing
-    setTimeout(() => {
-      setActivities(prev => [{
-        type: 'success',
-        message: `Task completed: ${task}`,
-        timestamp: new Date(),
-        status: 'success'
-      }, ...prev]);
-      
-      setStats(prev => ({
-        ...prev,
-        tasksCompleted: prev.tasksCompleted + 1,
-        aiDecisions: prev.aiDecisions + Math.floor(Math.random() * 5) + 1,
-        learningScore: Math.min(100, prev.learningScore + 1)
-      }));
-
-      setTerminalOutput(prev => [...prev, '✓ Task completed successfully', '']);
-      setIsRunning(false);
-    }, 3000);
+    setIsProcessing(false);
   };
 
   return (
@@ -98,20 +52,19 @@ export const AutonomousAgent = () => {
             <div className="flex items-center gap-3">
               <div className="relative">
                 <Brain className="w-10 h-10 text-primary" />
-                <Sparkles className="w-4 h-4 text-secondary absolute -top-1 -right-1 animate-pulse-glow" />
               </div>
               <div>
                 <h1 className="text-2xl font-bold bg-gradient-to-r from-primary to-secondary bg-clip-text text-transparent">
                   Autonomous AI Agent
                 </h1>
-                <p className="text-sm text-muted-foreground">Self-Learning Development System</p>
+                <p className="text-sm text-muted-foreground">Real AI-Powered Development System</p>
               </div>
             </div>
             
             <div className="flex items-center gap-3">
               <Badge variant="outline" className="gap-2 glass">
                 <Cpu className="w-4 h-4 text-primary" />
-                <span>CPU: {performance.cpu.toFixed(0)}%</span>
+                <span>CPU: {performance.cpu}%</span>
               </Badge>
               <Badge variant="outline" className="gap-2 glass">
                 <Network className="w-4 h-4 text-accent" />
@@ -123,8 +76,17 @@ export const AutonomousAgent = () => {
               </Badge>
               <Badge variant="outline" className="gap-2 glass">
                 <Shield className="w-4 h-4 text-success" />
-                <span>Secure</span>
+                <span>Active</span>
               </Badge>
+              <Button 
+                variant="outline" 
+                size="sm" 
+                onClick={signOut}
+                className="gap-2"
+              >
+                <LogOut className="w-4 h-4" />
+                Sign Out
+              </Button>
             </div>
           </div>
         </div>
@@ -138,34 +100,25 @@ export const AutonomousAgent = () => {
             <Input
               value={instruction}
               onChange={(e) => setInstruction(e.target.value)}
-              onKeyPress={(e) => e.key === 'Enter' && !isRunning && handleExecuteTask()}
+              onKeyPress={(e) => e.key === 'Enter' && !isProcessing && handleExecuteTask()}
               placeholder="Enter your instruction for the AI agent..."
               className="flex-1 bg-input/50 border-border/50 focus:border-primary text-lg"
-              disabled={isRunning}
+              disabled={isProcessing}
             />
             <Button 
-              onClick={isRunning ? () => setIsRunning(false) : handleExecuteTask}
-              disabled={!instruction.trim() && !isRunning}
-              className={`${isRunning ? 'bg-destructive hover:bg-destructive/90' : 'bg-primary hover:bg-primary/90'} glow-strong gap-2 px-8`}
+              onClick={handleExecuteTask}
+              disabled={!instruction.trim() || isProcessing}
+              className="bg-primary hover:bg-primary/90 glow-strong gap-2 px-8"
             >
-              {isRunning ? (
-                <>
-                  <Pause className="w-5 h-5" />
-                  Stop
-                </>
-              ) : (
-                <>
-                  <Play className="w-5 h-5" />
-                  Execute
-                </>
-              )}
+              <Play className="w-5 h-5" />
+              {isProcessing ? 'Processing...' : 'Execute'}
             </Button>
           </div>
           
-          {isRunning && (
+          {isProcessing && (
             <div className="mt-4 flex items-center gap-3 text-primary animate-slide-up">
               <div className="w-2 h-2 bg-primary rounded-full animate-pulse-glow" />
-              <span className="text-sm">AI agent is processing your request...</span>
+              <span className="text-sm">AI agent is processing your request with real AI...</span>
             </div>
           )}
         </Card>
@@ -242,15 +195,10 @@ export const AutonomousAgent = () => {
               <div className="mt-6">
                 <h4 className="text-sm font-semibold mb-3 flex items-center gap-2">
                   <Lightbulb className="w-4 h-4 text-warning" />
-                  Recent Learnings
+                  Real AI Learning - Stored in Database
                 </h4>
-                <div className="space-y-2">
-                  {['React component optimization patterns', 'Advanced TypeScript type inference', 'Database query optimization'].map((learning, i) => (
-                    <div key={i} className="flex items-center gap-2 p-2 rounded bg-muted/20 text-sm animate-slide-up" style={{ animationDelay: `${i * 100}ms` }}>
-                      <CheckCircle className="w-4 h-4 text-success" />
-                      <span>{learning}</span>
-                    </div>
-                  ))}
+                <div className="text-sm text-muted-foreground">
+                  Every task you execute is analyzed by real AI (Gemini Flash) and stored in your knowledge graph for continuous learning.
                 </div>
               </div>
             </Card>
