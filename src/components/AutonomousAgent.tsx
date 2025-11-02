@@ -8,6 +8,8 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Label } from '@/components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Progress } from '@/components/ui/progress';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Separator } from '@/components/ui/separator';
 import {
   Activity,
   AlertCircle,
@@ -30,6 +32,8 @@ import {
   X,
 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
+import { useAuth } from '@/hooks/useAuth';
+import { useAgentData } from '@/hooks/useAgentData';
 
 const GITHUB_API_URL = 'https://api.github.com';
 const CONNECTION_STORAGE_KEY = 'autodidact-builder:github-connection';
@@ -95,16 +99,83 @@ interface CommitEntry {
   url: string;
 }
 
+interface GitHubCommitResponse {
+  sha: string;
+  commit?: {
+    message?: string;
+    author?: {
+      name?: string;
+      date?: string;
+    };
+  };
+  author?: {
+    login?: string;
+  };
+  html_url: string;
+}
+
 interface SelectedFile {
   path: string;
   sha: string;
   content: string;
   originalContent: string;
+  pendingDelete?: boolean;
 }
 
 interface AgentWorkspaceProps {
   agentId: string;
   agentName: string;
+}
+
+interface AgentGeneratedChange {
+  path: string;
+  action: 'update' | 'create' | 'delete';
+  description?: string;
+  language?: string;
+  new_content?: string;
+  summary?: string;
+  lineDelta?: number;
+  previousContent?: string;
+  stepId?: string;
+  stepTitle?: string;
+}
+
+interface AgentTaskRecord {
+  id: string;
+  instruction: string;
+  status: string;
+  result?: string | null;
+  errorMessage?: string | null;
+  metadata: {
+    repo?: {
+      owner: string;
+      name: string;
+      branch: string;
+    };
+    files?: {
+      path: string;
+      content: string;
+      sha?: string | null;
+    }[];
+    additionalContext?: string;
+    autoApply?: boolean;
+    plan?: {
+      summary?: string;
+      steps?: {
+        id: string;
+        title: string;
+        objective: string;
+        target_files?: { path: string }[];
+      }[];
+    };
+    generatedChanges?: AgentGeneratedChange[];
+    stats?: {
+      linesChanged?: number;
+    };
+  };
+  startedAt?: Date | null;
+  completedAt?: Date | null;
+  createdAt: Date;
 }
 
 const formatDate = (value: string | Date) => {
@@ -177,6 +248,7 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
   const [currentPath, setCurrentPath] = useState('');
   const [selectedFile, setSelectedFile] = useState<SelectedFile | null>(null);
   const [commitMessage, setCommitMessage] = useState('');
+  const [bulkCommitMessage, setBulkCommitMessage] = useState('');
   const [commits, setCommits] = useState<CommitEntry[]>([]);
   const [statusLog, setStatusLog] = useState<StatusEntry[]>([]);
   const [operations, setOperations] = useState<OperationEntry[]>([]);
@@ -189,6 +261,19 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
   const [isLoadingContents, setIsLoadingContents] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isLoadingCommits, setIsLoadingCommits] = useState(false);
+  const { user } = useAuth();
+  const {
+    activities,
+    stats,
+    tasks,
+    executeTask,
+    isExecutingTask,
+  } = useAgentData(user?.id);
+  const [workspaceFiles, setWorkspaceFiles] = useState<Record<string, SelectedFile>>({});
+  const [pendingDeletions, setPendingDeletions] = useState<string[]>([]);
+  const [instructionInput, setInstructionInput] = useState('');
+  const [contextSelections, setContextSelections] = useState<Record<string, boolean>>({});
+  const [autoApplyResults, setAutoApplyResults] = useState(false);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -255,6 +340,9 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
     setTrackedEdits({});
     setCommittedPaths([]);
     setSessionLinesChanged(0);
+    setWorkspaceFiles({});
+    setPendingDeletions([]);
+    setContextSelections({});
   }, []);
 
   const request = useCallback(
@@ -384,7 +472,7 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
       const operationId = startOperation(`Fetching commits (${branchToLoad})`);
       setIsLoadingCommits(true);
       try {
-        const data = await request<any[]>(
+        const data = await request<GitHubCommitResponse[]>(
           `/repos/${owner}/${repo}/commits?sha=${encodeURIComponent(branchToLoad)}&per_page=10`
         );
         const mapped = (data ?? []).map((commit) => ({
@@ -463,12 +551,21 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
         }
 
         const decoded = decodeContent(data.content);
-        setSelectedFile({
+        const nextFile: SelectedFile = {
           path: data.path,
           sha: data.sha,
           content: decoded,
           originalContent: decoded,
-        });
+          pendingDelete: false,
+        };
+        setSelectedFile(nextFile);
+        setWorkspaceFiles((prev) => ({
+          ...prev,
+          [data.path]: nextFile,
+        }));
+        setContextSelections((prev) =>
+          data.path in prev ? prev : { ...prev, [data.path]: false }
+        );
         setCommitMessage(`Update ${data.name}`);
         setTrackedEdits((prev) => ({
           ...prev,
@@ -544,7 +641,18 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
       finishOperation(operationId, 'error', message);
       toast({ title: 'GitHub error', description: message, variant: 'destructive' });
     }
-  }, [calculateRepositoryLineCount, loadCommits, loadContents, repoInput, request, resetSessionTracking, startOperation, toast]);
+  }, [
+    calculateRepositoryLineCount,
+    loadCommits,
+    loadContents,
+    repoInput,
+    request,
+    resetSessionTracking,
+    startOperation,
+    toast,
+    finishOperation,
+    logStatus,
+  ]);
 
   const handleSelectBranch = useCallback(
     async (value: string) => {
@@ -595,6 +703,12 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
           lineDelta: countLines(value) - countLines(prev.originalContent),
         },
       }));
+      setWorkspaceFiles((prevFiles) => ({
+        ...prevFiles,
+        [prev.path]: {
+          ...next,
+        },
+      }));
       return next;
     });
   }, []);
@@ -643,6 +757,18 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
             }
           : prev
       );
+      setWorkspaceFiles((prev) =>
+        prev[selectedFile.path]
+          ? {
+              ...prev,
+              [selectedFile.path]: {
+                ...prev[selectedFile.path],
+                sha: nextSha,
+                originalContent: prev[selectedFile.path].content,
+              },
+            }
+          : prev
+      );
       setCommitMessage('');
       setTrackedEdits((prev) => ({
         ...prev,
@@ -662,7 +788,342 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
     } finally {
       setIsSaving(false);
     }
-  }, [branch, commitMessage, currentPath, loadCommits, loadContents, logStatus, owner, repo, request, selectedFile, startOperation, toast, token, trackedEdits, finishOperation]);
+  }, [
+    branch,
+    commitMessage,
+    currentPath,
+    loadCommits,
+    loadContents,
+    logStatus,
+    owner,
+    repo,
+    request,
+    selectedFile,
+    startOperation,
+    toast,
+    token,
+    trackedEdits,
+    finishOperation,
+  ]);
+
+  const handleCommitWorkspace = useCallback(async () => {
+    if (!owner || !repo || !branch) return;
+    const dirtyFiles = Object.values(workspaceFiles).filter(
+      (file) => trackedEdits[file.path]?.isDirty && !file.pendingDelete
+    );
+    const deletions = pendingDeletions.slice();
+    if (dirtyFiles.length === 0 && deletions.length === 0) {
+      toast({
+        title: 'No changes detected',
+        description: 'Load a file, make edits, or apply agent changes before committing.',
+      });
+      return;
+    }
+    if (!token.trim()) {
+      toast({
+        title: 'Authentication required',
+        description: 'Provide a GitHub personal access token to commit changes.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    const operationId = startOperation('Committing workspace changes');
+    setIsSaving(true);
+    logStatus(`Committing ${dirtyFiles.length} file(s) and ${deletions.length} deletion(s) to ${branch}...`);
+
+    try {
+      const ref = await request<{ object?: { sha?: string } }>(
+        `/repos/${owner}/${repo}/git/ref/heads/${encodeURIComponent(branch)}`
+      );
+      const baseCommitSha = ref?.object?.sha;
+      if (!baseCommitSha) {
+        throw new Error('Unable to resolve branch head for workspace commit');
+      }
+
+      const latestCommit = await request<{ tree?: { sha?: string } }>(
+        `/repos/${owner}/${repo}/git/commits/${baseCommitSha}`
+      );
+      const baseTreeSha = latestCommit?.tree?.sha;
+      if (!baseTreeSha) {
+        throw new Error('Unable to resolve base tree for workspace commit');
+      }
+
+      const blobMap = new Map<string, string>();
+      for (const file of dirtyFiles) {
+        const blobResponse = await request<{ sha: string }>(`/repos/${owner}/${repo}/git/blobs`, {
+          method: 'POST',
+          body: JSON.stringify({
+            content: encodeContent(file.content),
+            encoding: 'base64',
+          }),
+        });
+        blobMap.set(file.path, blobResponse.sha);
+      }
+
+      const treeEntries = [
+        ...dirtyFiles.map((file) => ({
+          path: file.path,
+          mode: '100644',
+          type: 'blob',
+          sha: blobMap.get(file.path),
+        })),
+        ...deletions.map((path) => ({
+          path,
+          mode: '100644',
+          type: 'blob',
+          sha: null,
+        })),
+      ];
+
+      const newTree = await request<{ sha: string }>(`/repos/${owner}/${repo}/git/trees`, {
+        method: 'POST',
+        body: JSON.stringify({
+          base_tree: baseTreeSha,
+          tree: treeEntries,
+        }),
+      });
+
+      const totalDelta = dirtyFiles.reduce(
+        (accumulator, file) => accumulator + Math.abs(trackedEdits[file.path]?.lineDelta ?? 0),
+        deletions.reduce((accumulator, path) => {
+          const original = workspaceFiles[path]?.originalContent ?? '';
+          return accumulator + countLines(original);
+        }, 0)
+      );
+
+      const commitBody = {
+        message:
+          bulkCommitMessage.trim() ||
+          (dirtyFiles.length + deletions.length === 1
+            ? `Update ${dirtyFiles[0]?.path ?? deletions[0]}`
+            : `Update ${dirtyFiles.length + deletions.length} files`),
+        tree: newTree.sha,
+        parents: [baseCommitSha],
+      };
+
+      const commitResponse = await request<{ sha: string }>(`/repos/${owner}/${repo}/git/commits`, {
+        method: 'POST',
+        body: JSON.stringify(commitBody),
+      });
+
+      await request(`/repos/${owner}/${repo}/git/refs/heads/${encodeURIComponent(branch)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ sha: commitResponse.sha }),
+      });
+
+      setTrackedEdits((prev) => {
+        const next = { ...prev };
+        dirtyFiles.forEach((file) => {
+          next[file.path] = { isDirty: false, lineDelta: 0 };
+        });
+        deletions.forEach((path) => {
+          next[path] = { isDirty: false, lineDelta: 0 };
+        });
+        return next;
+      });
+
+      setWorkspaceFiles((prev) => {
+        const next = { ...prev };
+        dirtyFiles.forEach((file) => {
+          next[file.path] = {
+            ...file,
+            originalContent: file.content,
+            pendingDelete: false,
+          };
+        });
+        deletions.forEach((path) => {
+          delete next[path];
+        });
+        return next;
+      });
+
+      setPendingDeletions([]);
+      setCommittedPaths((prev) => [
+        ...new Set([...prev, ...dirtyFiles.map((file) => file.path)]),
+      ]);
+      setSessionLinesChanged((prev) => prev + totalDelta);
+      setBulkCommitMessage('');
+      logStatus(`Workspace commit created (${totalDelta} lines changed).`, 'success');
+      finishOperation(operationId, 'success');
+      toast({
+        title: 'Workspace committed',
+        description: `Pushed ${dirtyFiles.length} file update(s)${deletions.length ? ` and ${deletions.length} deletion(s)` : ''}.`,
+      });
+      await Promise.all([loadContents(currentPath), loadCommits()]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to commit workspace changes';
+      logStatus(message, 'error');
+      finishOperation(operationId, 'error', message);
+      toast({ title: 'Commit failed', description: message, variant: 'destructive' });
+    } finally {
+      setIsSaving(false);
+    }
+  }, [
+    owner,
+    repo,
+    branch,
+    workspaceFiles,
+    trackedEdits,
+    pendingDeletions,
+    token,
+    startOperation,
+    request,
+    bulkCommitMessage,
+    toast,
+    logStatus,
+    finishOperation,
+    loadContents,
+    currentPath,
+    loadCommits,
+  ]);
+
+  const handleToggleContextFile = useCallback((path: string) => {
+    setContextSelections((prev) => ({
+      ...prev,
+      [path]: !prev[path],
+    }));
+  }, []);
+
+  const handleRunInstruction = useCallback(async () => {
+    if (!instructionInput.trim()) {
+      toast({
+        title: 'Instruction required',
+        description: 'Describe the coding task you want the agent to perform.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (!owner || !repo || !branch) {
+      toast({
+        title: 'Connect to GitHub',
+        description: 'Connect to a repository before launching the agent.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    const filesForAgent = selectedContextFiles.map((file) => ({
+      path: file.path,
+      content: file.content,
+      sha: file.sha,
+    }));
+
+    const task = await executeTask(instructionInput, {
+      repo: { owner, name: repo, branch },
+      files: filesForAgent,
+      token: token.trim() ? token.trim() : undefined,
+      additionalContext: `Session lines changed: ${sessionLinesChanged}`,
+      autoApply: autoApplyResults,
+    });
+
+    if (task) {
+      toast({
+        title: 'Agent dispatched',
+        description: 'The instruction is processing. Watch activity for updates.',
+      });
+      setInstructionInput('');
+    }
+  }, [
+    instructionInput,
+    toast,
+    owner,
+    repo,
+    branch,
+    selectedContextFiles,
+    executeTask,
+    token,
+    sessionLinesChanged,
+    autoApplyResults,
+  ]);
+
+  const handleApplyGeneratedChange = useCallback(
+    async (change: AgentGeneratedChange) => {
+      if (!change?.path) return;
+
+      if (change.action === 'delete') {
+        const original = change.previousContent ?? workspaceFiles[change.path]?.originalContent ?? '';
+        setPendingDeletions((prev) => (prev.includes(change.path) ? prev : [...prev, change.path]));
+        setWorkspaceFiles((prev) => ({
+          ...prev,
+          [change.path]: {
+            ...(prev[change.path] ?? {
+              path: change.path,
+              sha: '',
+              originalContent: original,
+            }),
+            content: '',
+            pendingDelete: true,
+          },
+        }));
+        setTrackedEdits((prev) => ({
+          ...prev,
+          [change.path]: {
+            isDirty: true,
+            lineDelta: -countLines(original),
+          },
+        }));
+        logStatus(`Marked ${change.path} for deletion`, 'success');
+        return;
+      }
+
+      if (typeof change.new_content !== 'string') {
+        toast({
+          title: 'Agent output missing code',
+          description: 'The agent did not provide file content for this change.',
+          variant: 'destructive',
+        });
+        return;
+      }
+
+      const existing = workspaceFiles[change.path];
+      const originalContent = change.previousContent ?? existing?.originalContent ?? '';
+      const newContent = change.new_content;
+
+      if (!existing && change.action !== 'create') {
+        await loadFile(change.path);
+      }
+
+      setWorkspaceFiles((prev) => ({
+        ...prev,
+        [change.path]: {
+          ...(prev[change.path] ?? {
+            path: change.path,
+            sha: prev[change.path]?.sha ?? '',
+            originalContent: originalContent,
+          }),
+          content: newContent,
+          pendingDelete: false,
+        },
+      }));
+
+      setTrackedEdits((prev) => ({
+        ...prev,
+        [change.path]: {
+          isDirty: true,
+          lineDelta: countLines(newContent) - countLines(originalContent),
+        },
+      }));
+
+      setPendingDeletions((prev) => prev.filter((item) => item !== change.path));
+
+      if (selectedFile?.path === change.path) {
+        setSelectedFile((prev) =>
+          prev
+            ? {
+                ...prev,
+                content: newContent,
+                pendingDelete: false,
+              }
+            : prev
+        );
+      }
+
+      logStatus(`Applied agent change to ${change.path}`, 'success');
+    },
+    [loadFile, logStatus, selectedFile?.path, toast, workspaceFiles]
+  );
 
   const isConnected = connectionState === 'connected' && !!repoInfo;
   const isDirty = selectedFile ? selectedFile.content !== selectedFile.originalContent : false;
@@ -689,6 +1150,19 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
     [trackedEdits]
   );
   const operationsToDisplay = useMemo(() => operations.slice(0, 8), [operations]);
+  const availableContextFiles = useMemo(
+    () => Object.values(workspaceFiles).sort((a, b) => a.path.localeCompare(b.path)),
+    [workspaceFiles]
+  );
+  const selectedContextFiles = useMemo(
+    () => availableContextFiles.filter((file) => contextSelections[file.path]),
+    [availableContextFiles, contextSelections]
+  );
+  const recentTasks = useMemo<AgentTaskRecord[]>(() => tasks.slice(0, 8), [tasks]);
+  const hasWorkspaceChanges = useMemo(
+    () => dirtyFilesCount > 0 || pendingDeletions.length > 0,
+    [dirtyFilesCount, pendingDeletions]
+  );
 
   return (
     <div className="space-y-6">
@@ -784,6 +1258,110 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
               )}
             </div>
           </Card>
+
+          {isConnected && (
+            <Card className="space-y-4 p-6">
+              <div className="flex items-center gap-3">
+                <Activity className="h-5 w-5 text-primary" />
+                <div>
+                  <h2 className="text-lg font-semibold">Autonomous instruction</h2>
+                  <p className="text-sm text-muted-foreground">
+                    Describe what you want the agent to build or refactor. Provide relevant files to maximise context.
+                  </p>
+                </div>
+              </div>
+
+              <Textarea
+                value={instructionInput}
+                onChange={(event) => setInstructionInput(event.target.value)}
+                placeholder="E.g. add a responsive dashboard card for deployment health and wire it to Supabase metrics."
+                className="min-h-[120px]"
+              />
+
+              <div className="flex flex-col gap-4 lg:flex-row">
+                <div className="flex-1 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <Label>Context files</Label>
+                    <span className="text-xs text-muted-foreground">
+                      {selectedContextFiles.length}/{availableContextFiles.length} selected
+                    </span>
+                  </div>
+                  <ScrollArea className="h-40 rounded-md border border-border/60">
+                    {availableContextFiles.length === 0 ? (
+                      <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
+                        Open files to make them available as context.
+                      </div>
+                    ) : (
+                      <div className="divide-y divide-border/60">
+                        {availableContextFiles.map((file) => (
+                          <label
+                            key={file.path}
+                            className="flex cursor-pointer items-center gap-3 px-3 py-2 text-sm hover:bg-muted/40"
+                          >
+                            <Checkbox
+                              checked={contextSelections[file.path] ?? false}
+                              onCheckedChange={() => handleToggleContextFile(file.path)}
+                              aria-label={`Toggle ${file.path} context`}
+                            />
+                            <div>
+                              <p className="font-medium">{file.path}</p>
+                              <p className="text-xs text-muted-foreground">
+                                {countLines(file.content)} lines - sha {file.sha ? file.sha.slice(0, 7) : 'new'}
+                              </p>
+                            </div>
+                          </label>
+                        ))}
+                      </div>
+                    )}
+                  </ScrollArea>
+                </div>
+                <Separator orientation="vertical" className="hidden lg:block" />
+                <div className="lg:w-64 space-y-3 rounded-lg border border-border/60 p-4">
+                  <p className="text-sm font-medium">Session stats</p>
+                  <div className="space-y-2 text-sm text-muted-foreground">
+                    <div className="flex items-center justify-between">
+                      <span>Tasks completed</span>
+                      <span>{stats.tasksCompleted}</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span>Lines changed</span>
+                      <span>{stats.linesChanged.toLocaleString()}</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span>AI decisions</span>
+                      <span>{stats.aiDecisions.toLocaleString()}</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span>Knowledge nodes</span>
+                      <span>{stats.knowledgeNodes}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-3">
+                <Button onClick={handleRunInstruction} disabled={isExecutingTask}>
+                  {isExecutingTask ? (
+                    <span className="inline-flex items-center gap-2">
+                      <Loader2 className="h-4 w-4 animate-spin" /> Thinking...
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-2">
+                      <Bot className="h-4 w-4" /> Run instruction
+                    </span>
+                  )}
+                </Button>
+                <label className="inline-flex items-center gap-2 text-sm text-muted-foreground">
+                  <Checkbox
+                    id={`auto-apply-${agentId}`}
+                    checked={autoApplyResults}
+                    onCheckedChange={(value) => setAutoApplyResults(value === true)}
+                  />
+                  Auto apply generated code
+                </label>
+              </div>
+            </Card>
+          )}
 
           {isConnected && (
             <Card className="p-6">
@@ -917,18 +1495,40 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
                         value={commitMessage}
                         onChange={(event) => setCommitMessage(event.target.value)}
                       />
+                      {hasWorkspaceChanges && (
+                        <>
+                          <Label htmlFor={`workspace-message-${agentId}`}>Workspace commit message</Label>
+                          <Input
+                            id={`workspace-message-${agentId}`}
+                            placeholder="Summarise multi-file change"
+                            value={bulkCommitMessage}
+                            onChange={(event) => setBulkCommitMessage(event.target.value)}
+                          />
+                        </>
+                      )}
                     </div>
-                    <div className="flex items-end gap-2">
+                    <div className="flex flex-wrap items-end gap-2">
                       <Button className="w-full" onClick={handleSave} disabled={!isDirty || isSaving}>
                         {isSaving ? (
                           <span className="inline-flex items-center gap-2">
-                            <Loader2 className="h-4 w-4 animate-spin" /> Saving…
+                            <Loader2 className="h-4 w-4 animate-spin" /> Saving...
                           </span>
                         ) : (
                           <span className="inline-flex items-center gap-2">
                             <Save className="h-4 w-4" /> Commit changes
                           </span>
                         )}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        className="w-full"
+                        onClick={handleCommitWorkspace}
+                        disabled={!hasWorkspaceChanges || isSaving}
+                      >
+                        <span className="inline-flex items-center gap-2">
+                          <GitBranch className="h-4 w-4" /> Commit workspace
+                        </span>
                       </Button>
                       <Button
                         type="button"
@@ -939,7 +1539,7 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
                       >
                         {lineCountStatus === 'loading' ? (
                           <span className="inline-flex items-center gap-2">
-                            <Loader2 className="h-4 w-4 animate-spin" /> Recounting…
+                            <Loader2 className="h-4 w-4 animate-spin" /> Recounting...
                           </span>
                         ) : (
                           <span className="inline-flex items-center gap-2">
@@ -955,6 +1555,96 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
                   <FileCode className="h-10 w-10" />
                   <p>Select a file to start editing.</p>
                   <p className="text-xs">Changes are committed directly to GitHub when you save.</p>
+                </div>
+              )}
+            </Card>
+          )}
+
+          {isConnected && (
+            <Card className="space-y-4 p-6">
+              <div className="flex items-center gap-2">
+                <FileDiff className="h-5 w-5 text-primary" />
+                <h2 className="text-lg font-semibold">Agent output</h2>
+              </div>
+
+              {recentTasks.length === 0 ? (
+                <div className="rounded-lg border border-dashed border-border/60 p-6 text-center text-sm text-muted-foreground">
+                  Launch an instruction to let the agent propose code changes. Results will appear here with options to apply patches directly into your workspace.
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {recentTasks.map((task) => {
+                    const statusVariant: 'default' | 'secondary' | 'destructive' | 'outline' =
+                      task.status === 'completed'
+                        ? 'default'
+                        : task.status === 'failed'
+                        ? 'destructive'
+                        : 'secondary';
+                    const changes = (task.metadata.generatedChanges ?? []) as AgentGeneratedChange[];
+                    return (
+                      <div key={task.id} className="space-y-3 rounded-lg border border-border/60 p-4">
+                        <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                          <div>
+                            <p className="font-semibold">{task.instruction}</p>
+                            <p className="text-xs text-muted-foreground">
+                              {task.createdAt ? formatDate(task.createdAt) : ''}
+                              {task.metadata.stats?.linesChanged !== undefined && (
+                                <span className="ml-2">
+                                  - {task.metadata.stats.linesChanged?.toLocaleString()} lines suggested
+                                </span>
+                              )}
+                            </p>
+                          </div>
+                          <Badge variant={statusVariant}>{task.status}</Badge>
+                        </div>
+
+                        {task.result && (
+                          <p className="rounded-md bg-muted/40 p-3 text-sm text-muted-foreground">{task.result}</p>
+                        )}
+
+                        {changes.length > 0 ? (
+                          <div className="space-y-3">
+                            {changes.map((change, index) => (
+                              <div
+                                key={`${task.id}-${change.path}-${index}`}
+                                className="space-y-2 rounded-md border border-dashed border-border/60 p-3"
+                              >
+                                <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                                  <div>
+                                    <p className="font-medium">{change.path}</p>
+                                    <p className="text-xs text-muted-foreground">
+                                      {change.action} - delta {change.lineDelta ?? 0} lines
+                                    </p>
+                                  </div>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => handleApplyGeneratedChange(change)}
+                                  >
+                                    Apply to workspace
+                                  </Button>
+                                </div>
+                                {change.summary && (
+                                  <p className="text-xs text-muted-foreground">{change.summary}</p>
+                                )}
+                                {change.description && (
+                                  <p className="text-xs text-muted-foreground">{change.description}</p>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-xs text-muted-foreground">
+                            No code suggestions produced for this task.
+                          </p>
+                        )}
+
+                        {task.errorMessage && (
+                          <p className="text-xs text-destructive">Error: {task.errorMessage}</p>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </Card>
@@ -1019,6 +1709,31 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
                     );
                   })}
                 </div>
+              )}
+            </div>
+          </Card>
+
+          <Card className="p-6">
+            <div className="flex items-center gap-2">
+              <Clock className="h-5 w-5 text-primary" />
+              <h2 className="text-lg font-semibold">Activity feed</h2>
+            </div>
+
+            <div className="mt-4 space-y-3">
+              {activities.length === 0 ? (
+                <div className="flex h-[160px] items-center justify-center text-sm text-muted-foreground">
+                  No activity yet. Run an instruction or commit changes to populate the feed.
+                </div>
+              ) : (
+                activities.map((activity) => (
+                  <div key={activity.id} className="space-y-1 rounded-md border border-border/60 p-3 text-sm">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="font-medium">{activity.message}</p>
+                      <span className="text-xs text-muted-foreground">{formatDate(activity.timestamp)}</span>
+                    </div>
+                    <Badge variant="outline">{activity.status}</Badge>
+                  </div>
+                ))
               )}
             </div>
           </Card>
