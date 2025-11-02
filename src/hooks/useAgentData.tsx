@@ -174,12 +174,12 @@ export const useAgentData = (userId: string | undefined) => {
 
     if (metrics) {
       setStats({
-        tasksCompleted: metrics.tasks_completed,
-        linesChanged: metrics.lines_changed,
-        aiDecisions: metrics.ai_decisions,
-        learningScore: metrics.learning_score,
+        tasksCompleted: metrics.tasks_completed ?? 0,
+        linesChanged: metrics.lines_changed ?? 0,
+        aiDecisions: metrics.ai_decisions ?? 0,
+        learningScore: metrics.learning_score ?? 75,
         knowledgeNodes: knowledgeCount ?? 0,
-        autonomyLevel: metrics.autonomy_level,
+        autonomyLevel: metrics.autonomy_level ?? 92,
       });
     }
   }, [userId]);
