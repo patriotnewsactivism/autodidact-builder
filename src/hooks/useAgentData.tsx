@@ -38,8 +38,27 @@ interface AgentTaskMetadata {
   generatedChanges?: unknown;
   stats?: {
     linesChanged?: number;
+    stepsExecuted?: number;
+    changesProposed?: number;
   };
+  autoApplyResult?: {
+    status: 'success' | 'failed' | 'skipped';
+    message: string;
+    commitSha?: string;
+    commitUrl?: string;
+    filesCommitted?: number;
+  } | null;
   [key: string]: unknown;
+}
+
+interface KnowledgeNode {
+  id: string;
+  title: string;
+  content: string | null;
+  category: string | null;
+  createdAt: Date;
+  confidenceScore: number | null;
+  usageCount?: number | null;
 }
 
 interface AgentTask {
@@ -90,6 +109,7 @@ export const useAgentData = (userId: string | undefined) => {
   });
   const [tasks, setTasks] = useState<AgentTask[]>([]);
   const [isExecutingTask, setIsExecutingTask] = useState(false);
+  const [knowledgeNodes, setKnowledgeNodes] = useState<KnowledgeNode[]>([]);
   const { toast } = useToast();
   const mapTaskRow = useCallback((row: AgentTaskRow): AgentTask => {
     return {
@@ -181,6 +201,33 @@ export const useAgentData = (userId: string | undefined) => {
     setTasks((data ?? []).map(mapTaskRow));
   }, [mapTaskRow, userId]);
 
+  const fetchKnowledgeNodes = useCallback(async () => {
+    if (!userId) return;
+    const { data, error } = await supabase
+      .from('knowledge_nodes')
+      .select('*')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false })
+      .limit(12);
+
+    if (error) {
+      console.error('Error fetching knowledge nodes:', error);
+      return;
+    }
+
+    setKnowledgeNodes(
+      (data ?? []).map((node) => ({
+        id: node.id,
+        title: node.title,
+        content: node.content,
+        category: node.category,
+        createdAt: node.created_at ? new Date(node.created_at) : new Date(),
+        confidenceScore: node.confidence_score,
+        usageCount: node.usage_count,
+      }))
+    );
+  }, [userId]);
+
   const executeTask = useCallback(
     async (instruction: string, options?: ExecuteTaskOptions) => {
       if (!userId) {
@@ -267,7 +314,8 @@ export const useAgentData = (userId: string | undefined) => {
     fetchActivities();
     fetchStats();
     fetchTasks();
-  }, [fetchActivities, fetchStats, fetchTasks]);
+    fetchKnowledgeNodes();
+  }, [fetchActivities, fetchKnowledgeNodes, fetchStats, fetchTasks]);
 
   useEffect(() => {
     if (!userId) return;
@@ -275,6 +323,7 @@ export const useAgentData = (userId: string | undefined) => {
     fetchActivities();
     fetchStats();
     fetchTasks();
+    fetchKnowledgeNodes();
 
     const activitiesChannel = supabase
       .channel(`activities-${userId}`)
@@ -318,12 +367,27 @@ export const useAgentData = (userId: string | undefined) => {
       )
       .subscribe();
 
+    const knowledgeChannel = supabase
+      .channel(`knowledge-${userId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'knowledge_nodes',
+          filter: `user_id=eq.${userId}`,
+        },
+        fetchKnowledgeNodes
+      )
+      .subscribe();
+
     return () => {
       supabase.removeChannel(activitiesChannel);
       supabase.removeChannel(metricsChannel);
       supabase.removeChannel(tasksChannel);
+      supabase.removeChannel(knowledgeChannel);
     };
-  }, [fetchActivities, fetchStats, fetchTasks, userId]);
+  }, [fetchActivities, fetchKnowledgeNodes, fetchStats, fetchTasks, userId]);
 
   return {
     activities,
@@ -332,5 +396,6 @@ export const useAgentData = (userId: string | undefined) => {
     executeTask,
     isExecutingTask,
     refreshAgentData,
+    knowledgeNodes,
   };
 };
