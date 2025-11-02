@@ -76,7 +76,6 @@ const MODEL_NAME =
   Deno.env.get('OLLAMA_MODEL') ??
   Deno.env.get('MODEL_NAME') ??
   'phi4';
-const GITHUB_API_URL = 'https://api.github.com';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL');
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
