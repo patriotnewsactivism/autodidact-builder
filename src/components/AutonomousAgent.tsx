@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ChangeEvent } from 'react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -10,6 +10,15 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Progress } from '@/components/ui/progress';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Separator } from '@/components/ui/separator';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import {
   Activity,
   AlertCircle,
@@ -37,10 +46,56 @@ import {
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/auth/AuthProvider';
 import { useAgentData } from '@/hooks/useAgentData';
+import { useSecureGithubToken } from '@/hooks/useSecureGithubToken';
+import { CodeDiff } from '@/components/CodeDiff';
 
 const GITHUB_API_URL = 'https://api.github.com';
 const CONNECTION_STORAGE_KEY = 'autodidact-builder:github-connection';
 const MAX_LINE_COUNT_BLOBS = 400;
+const MAX_GITHUB_RETRIES = 4;
+const LINE_COUNT_CONCURRENCY = 6;
+
+type GitHubRequestErrorCode =
+  | 'rate_limit'
+  | 'unauthorized'
+  | 'not_found'
+  | 'validation'
+  | 'server_error'
+  | 'conflict'
+  | 'network_error'
+  | 'parse_error'
+  | 'unknown';
+
+class GitHubRequestError extends Error {
+  status: number;
+  code: GitHubRequestErrorCode;
+  retryAfter?: number;
+  documentationUrl?: string;
+  rawBody?: string;
+  headers?: Record<string, string>;
+
+  constructor(
+    message: string,
+    details: {
+      status: number;
+      code: GitHubRequestErrorCode;
+      retryAfter?: number;
+      documentationUrl?: string;
+      rawBody?: string;
+      headers?: Record<string, string>;
+      cause?: unknown;
+    }
+  ) {
+    super(message, details.cause ? { cause: details.cause } : undefined);
+    this.name = 'GitHubRequestError';
+    this.status = details.status;
+    this.code = details.code;
+    this.retryAfter = details.retryAfter;
+    this.documentationUrl = details.documentationUrl;
+    this.rawBody = details.rawBody;
+    this.headers = details.headers;
+  }
+}
 
 type StatusLevel = 'info' | 'success' | 'error';
 type OperationStatus = 'running' | 'success' | 'error';
@@ -75,6 +130,14 @@ interface RepoInfo {
   watchers_count: number;
   html_url: string;
   pushed_at: string;
+  private?: boolean;
+  permissions?: {
+    admin?: boolean;
+    maintain?: boolean;
+    push?: boolean;
+    triage?: boolean;
+    pull?: boolean;
+  };
 }
 
 interface BranchInfo {
@@ -192,6 +255,17 @@ interface AgentTaskRecord {
   createdAt: Date;
 }
 
+interface ChangePreviewState {
+  taskId: string;
+  change: AgentGeneratedChange;
+  originalContent: string;
+  proposedContent: string;
+  remoteSha?: string;
+  isLoading: boolean;
+  error?: string;
+  warnings: string[];
+}
+
 const formatDate = (value: string | Date) => {
   const date = value instanceof Date ? value : new Date(value);
   return date.toLocaleString();
@@ -245,6 +319,25 @@ const encodePath = (path: string) =>
     .map((segment) => encodeURIComponent(segment))
     .join('/');
 
+const formatGitHubErrorMessage = (error: unknown, fallback: string) => {
+  if (error instanceof GitHubRequestError) {
+    if (error.code === 'rate_limit') {
+      const retrySeconds = error.retryAfter ? Math.ceil(error.retryAfter / 1000) : null;
+      return retrySeconds
+        ? `${error.message} — retry after ${retrySeconds}s`
+        : `${error.message} — you have hit GitHub's rate limit.`;
+    }
+    if (error.code === 'unauthorized') {
+      return `${error.message} — check that your personal access token is valid and has the required scopes.`;
+    }
+    return error.message;
+  }
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return fallback;
+};
+
 const countLines = (value: string) => {
   if (!value) {
     return 0;
@@ -276,7 +369,20 @@ const generateId = () => {
 const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) => {
   const storageKey = `${CONNECTION_STORAGE_KEY}:${agentId}`;
   const { toast } = useToast();
-  const [token, setToken] = useState('');
+  const { session, user } = useAuth();
+  const {
+    token,
+    setToken: setSecureToken,
+    hasStoredToken,
+    isLoading: isTokenLoading,
+    isSaving: isTokenSaving,
+    lastUpdated: tokenLastUpdated,
+    error: tokenError,
+    persistToken,
+    clearToken,
+    storageAvailable: tokenStorageAvailable,
+  } = useSecureGithubToken(session);
+  const [tokenInput, setTokenInput] = useState('');
   const [repoInput, setRepoInput] = useState('');
   const [owner, setOwner] = useState('');
   const [repo, setRepo] = useState('');
@@ -301,7 +407,6 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
   const [isLoadingContents, setIsLoadingContents] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isLoadingCommits, setIsLoadingCommits] = useState(false);
-  const { user } = useAuth();
   const {
     activities,
     stats,
@@ -309,6 +414,7 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
     executeTask,
     isExecutingTask,
     knowledgeNodes,
+    dataErrors,
   } = useAgentData(user?.id);
   const [workspaceFiles, setWorkspaceFiles] = useState<Record<string, SelectedFile>>({});
   const [pendingDeletions, setPendingDeletions] = useState<string[]>([]);
@@ -316,6 +422,8 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
   const [contextSelections, setContextSelections] = useState<Record<string, boolean>>({});
   const [autoApplyResults, setAutoApplyResults] = useState(false);
   const [appliedChanges, setAppliedChanges] = useState<Set<string>>(new Set());
+  const [changePreview, setChangePreview] = useState<ChangePreviewState | null>(null);
+  const trimmedToken = useMemo(() => token.trim(), [token]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -387,54 +495,208 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
     setContextSelections({});
   }, []);
 
+  const handleTokenInputChange = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => {
+      const nextValue = event.target.value;
+      setTokenInput(nextValue);
+      setSecureToken(nextValue);
+    },
+    [setSecureToken]
+  );
+
+  const handlePersistTokenClick = useCallback(async () => {
+    const candidate = tokenInput.trim() || trimmedToken;
+    if (!candidate) {
+      toast({
+        title: 'Token required',
+        description: 'Enter a GitHub personal access token before saving it securely.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    const saved = await persistToken(candidate);
+    if (saved) {
+      setTokenInput('');
+      toast({
+        title: 'Token secured',
+        description: 'Your GitHub token is encrypted locally with your Supabase session.',
+      });
+    }
+  }, [persistToken, tokenInput, trimmedToken, toast]);
+
+  const handleClearStoredToken = useCallback(() => {
+    clearToken();
+    setSecureToken('');
+    setTokenInput('');
+    toast({
+      title: 'Token cleared',
+      description: 'Removed the stored GitHub token from this browser.',
+    });
+  }, [clearToken, setSecureToken, toast]);
+
   const request = useCallback(
     async <T,>(path: string, init: RequestInit = {}) => {
-      const headers: Record<string, string> = {
-        Accept: 'application/vnd.github+json',
-        'X-GitHub-Api-Version': '2022-11-28',
-      };
+      const baseHeaders = new Headers(init.headers ?? undefined);
+      baseHeaders.set('Accept', 'application/vnd.github+json');
+      baseHeaders.set('X-GitHub-Api-Version', '2022-11-28');
 
-      if (token.trim()) {
-        headers.Authorization = `Bearer ${token.trim()}`;
+      if (trimmedToken) {
+        baseHeaders.set('Authorization', `Bearer ${trimmedToken}`);
       }
 
-      if (init.body && !(init.headers && 'Content-Type' in init.headers)) {
-        headers['Content-Type'] = 'application/json';
+      if (init.body && !baseHeaders.has('Content-Type')) {
+        baseHeaders.set('Content-Type', 'application/json');
       }
 
-      const response = await fetch(`${GITHUB_API_URL}${path}`, {
-        ...init,
-        headers,
-      });
+      let attempt = 0;
+      let lastError: GitHubRequestError | null = null;
 
-      const text = await response.text();
-
-      if (!response.ok) {
-        let message = response.statusText;
+      while (attempt < MAX_GITHUB_RETRIES) {
         try {
-          const data = text ? JSON.parse(text) : null;
-          if (data?.message) {
-            message = data.message;
+          const response = await fetch(`${GITHUB_API_URL}${path}`, {
+            ...init,
+            headers: baseHeaders,
+          });
+
+          const text = await response.text();
+
+          if (!response.ok) {
+            const headers = Object.fromEntries(response.headers.entries());
+            let message = response.statusText || 'GitHub request failed';
+            let documentationUrl: string | undefined;
+            let parsedBody: unknown = null;
+            if (text) {
+              try {
+                parsedBody = JSON.parse(text);
+                if (parsedBody && typeof parsedBody === 'object') {
+                  const body = parsedBody as { message?: string; documentation_url?: string };
+                  if (body.message) {
+                    message = body.message;
+                  }
+                  if (body.documentation_url) {
+                    documentationUrl = body.documentation_url;
+                  }
+                }
+              } catch (_error) {
+                parsedBody = text;
+                if (text.trim()) {
+                  message = text.trim();
+                }
+              }
+            }
+
+            const remaining = response.headers.get('x-ratelimit-remaining');
+            const reset = response.headers.get('x-ratelimit-reset');
+            const retryAfterHeader = response.headers.get('retry-after');
+            const isRateLimited =
+              response.status === 429 || (response.status === 403 && remaining === '0');
+
+            let retryAfter: number | undefined;
+            if (retryAfterHeader) {
+              const retrySeconds = Number(retryAfterHeader);
+              if (!Number.isNaN(retrySeconds) && retrySeconds > 0) {
+                retryAfter = retrySeconds * 1000;
+              }
+            } else if (isRateLimited && reset) {
+              const resetSeconds = Number(reset);
+              if (!Number.isNaN(resetSeconds)) {
+                const resetDelay = resetSeconds * 1000 - Date.now();
+                if (resetDelay > 0) {
+                  retryAfter = resetDelay;
+                }
+              }
+            }
+
+            let code: GitHubRequestErrorCode = 'unknown';
+            if (isRateLimited) {
+              code = 'rate_limit';
+            } else if (response.status === 401) {
+              code = 'unauthorized';
+            } else if (response.status === 403) {
+              code = 'unauthorized';
+            } else if (response.status === 404) {
+              code = 'not_found';
+            } else if (response.status === 409) {
+              code = 'conflict';
+            } else if (response.status === 422) {
+              code = 'validation';
+            } else if (response.status >= 500) {
+              code = 'server_error';
+            }
+
+            const error = new GitHubRequestError(message || 'GitHub request failed', {
+              status: response.status,
+              code,
+              retryAfter,
+              documentationUrl,
+              rawBody:
+                typeof parsedBody === 'string'
+                  ? parsedBody
+                  : parsedBody
+                  ? JSON.stringify(parsedBody)
+                  : undefined,
+              headers,
+            });
+
+            lastError = error;
+
+            const shouldRetry =
+              attempt < MAX_GITHUB_RETRIES - 1 && (code === 'rate_limit' || code === 'server_error');
+
+            if (shouldRetry) {
+              const backoff = retryAfter ?? Math.min(1000 * 2 ** attempt, 15000);
+              await new Promise((resolve) => setTimeout(resolve, backoff));
+              attempt += 1;
+              continue;
+            }
+
+            throw error;
+          }
+
+          if (!text) {
+            return null as T;
+          }
+
+          try {
+            return JSON.parse(text) as T;
+          } catch (error) {
+            throw new GitHubRequestError('Unable to parse GitHub response', {
+              status: response.status,
+              code: 'parse_error',
+              rawBody: text,
+              headers: Object.fromEntries(response.headers.entries()),
+              cause: error,
+            });
           }
         } catch (error) {
-          if (text) {
-            message = text;
+          if (error instanceof GitHubRequestError) {
+            throw error;
           }
+
+          lastError = new GitHubRequestError('Network error contacting GitHub', {
+            status: 0,
+            code: 'network_error',
+            cause: error,
+          });
+
+          if (attempt < MAX_GITHUB_RETRIES - 1) {
+            const backoff = Math.min(1000 * 2 ** attempt, 15000);
+            await new Promise((resolve) => setTimeout(resolve, backoff));
+            attempt += 1;
+            continue;
+          }
+
+          throw lastError;
         }
-        throw new Error(message || 'GitHub request failed');
       }
 
-      if (!text) {
-        return null as T;
-      }
-
-      try {
-        return JSON.parse(text) as T;
-      } catch (error) {
-        throw new Error('Unable to parse GitHub response');
-      }
+      throw lastError ?? new GitHubRequestError('Unknown GitHub error', {
+        status: 0,
+        code: 'unknown',
+      });
     },
-    [token]
+    [trimmedToken]
   );
 
   const calculateRepositoryLineCount = useCallback(
@@ -465,24 +727,50 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
 
         let processed = 0;
         let totalLinesAccumulated = 0;
-        for (const blob of limitedBlobs) {
-          const blobData = await request<{ content?: string; encoding?: string }>(
-            `/repos/${owner}/${repo}/git/blobs/${blob.sha}`
-          );
-          if (!blobData?.content || blobData.encoding !== 'base64') {
-            continue;
-          }
-          const decoded = decodeContent(blobData.content);
-          if (isProbablyBinary(decoded)) {
-            continue;
-          }
-          totalLinesAccumulated += countLines(decoded);
-          processed += 1;
-          updateOperationProgress(operationId, { current: processed, total: limitedBlobs.length });
-          if (processed % 50 === 0) {
-            logStatus(`Line count progress: ${processed}/${limitedBlobs.length} files processed.`);
-          }
-        }
+        let warningsLogged = 0;
+        const totalBlobs = limitedBlobs.length;
+
+        let cursor = 0;
+        const workers = Array.from({ length: Math.min(LINE_COUNT_CONCURRENCY, totalBlobs) }, () =>
+          (async () => {
+            while (cursor < totalBlobs) {
+              const currentIndex = cursor;
+              cursor += 1;
+              const blob = limitedBlobs[currentIndex];
+              try {
+                const blobData = await request<{ content?: string; encoding?: string }>(
+                  `/repos/${owner}/${repo}/git/blobs/${blob.sha}`
+                );
+                if (!blobData?.content || blobData.encoding !== 'base64') {
+                  if (warningsLogged < 3) {
+                    logStatus(`Skipped non-text blob at ${blob.path}`, 'info');
+                    warningsLogged += 1;
+                  }
+                  continue;
+                }
+                const decoded = decodeContent(blobData.content);
+                if (isProbablyBinary(decoded)) {
+                  continue;
+                }
+                totalLinesAccumulated += countLines(decoded);
+              } catch (error) {
+                const message =
+                  error instanceof GitHubRequestError
+                    ? error.message
+                    : 'Failed to load blob for line count analysis';
+                logStatus(`${message} (${blob.path})`, 'error');
+              } finally {
+                processed += 1;
+                updateOperationProgress(operationId, { current: processed, total: totalBlobs });
+                if (processed % 50 === 0 || processed === totalBlobs) {
+                  logStatus(`Line count progress: ${processed}/${totalBlobs} files processed.`);
+                }
+              }
+            }
+          })()
+        );
+
+        await Promise.all(workers);
 
         if (blobs.length > limitedBlobs.length) {
           logStatus(`Line count limited to first ${limitedBlobs.length} files for performance.`, 'info');
@@ -494,7 +782,7 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
         logStatus(`Estimated repository line count: ${totalLinesAccumulated.toLocaleString()} lines.`, 'success');
         return true;
       } catch (error) {
-        const message = error instanceof Error ? error.message : 'Failed to calculate repository lines';
+        const message = formatGitHubErrorMessage(error, 'Failed to calculate repository lines');
         setLineCountStatus('error');
         setLineCountError(message);
         finishOperation(operationId, 'error', message);
@@ -528,7 +816,7 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
         finishOperation(operationId, 'success');
         return true;
       } catch (error) {
-        const message = error instanceof Error ? error.message : 'Failed to load commits';
+        const message = formatGitHubErrorMessage(error, 'Failed to load commits');
         finishOperation(operationId, 'error', message);
         logStatus(message, 'error');
         return false;
@@ -566,7 +854,7 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
         finishOperation(operationId, 'success');
         return true;
       } catch (error) {
-        const message = error instanceof Error ? error.message : 'Failed to load repository contents';
+        const message = formatGitHubErrorMessage(error, 'Failed to load repository contents');
         finishOperation(operationId, 'error', message);
         logStatus(message, 'error');
         return false;
@@ -615,7 +903,7 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
         }));
         finishOperation(operationId, 'success');
       } catch (error) {
-        const message = error instanceof Error ? error.message : 'Failed to load file';
+        const message = formatGitHubErrorMessage(error, 'Failed to load file');
         finishOperation(operationId, 'error', message);
         logStatus(message, 'error');
       }
@@ -677,7 +965,7 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
         finishOperation(operationId, 'error', 'Some repository data failed to load completely');
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to connect to repository';
+      const message = formatGitHubErrorMessage(error, 'Failed to connect to repository');
       logStatus(message, 'error');
       setConnectionState('error');
       finishOperation(operationId, 'error', message);
@@ -757,10 +1045,19 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
 
   const handleSave = useCallback(async () => {
     if (!selectedFile || !owner || !repo || !branch) return;
-    if (!token.trim()) {
+    if (!trimmedToken) {
       toast({
         title: 'Authentication required',
         description: 'Provide a GitHub personal access token to commit changes.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (!hasWriteAccess) {
+      toast({
+        title: 'Read-only access',
+        description: 'Your current credentials do not have push permissions for this repository.',
         variant: 'destructive',
       });
       return;
@@ -823,7 +1120,7 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
       toast({ title: 'Commit created', description: `${selectedFile.path} updated on ${branch}` });
       await Promise.all([loadContents(currentPath), loadCommits()]);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to commit changes';
+      const message = formatGitHubErrorMessage(error, 'Failed to commit changes');
       logStatus(message, 'error');
       finishOperation(operationId, 'error', message);
       toast({ title: 'Commit failed', description: message, variant: 'destructive' });
@@ -834,6 +1131,7 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
     branch,
     commitMessage,
     currentPath,
+    hasWriteAccess,
     loadCommits,
     loadContents,
     logStatus,
@@ -843,7 +1141,7 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
     selectedFile,
     startOperation,
     toast,
-    token,
+    trimmedToken,
     trackedEdits,
     finishOperation,
   ]);
@@ -861,10 +1159,19 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
       });
       return;
     }
-    if (!token.trim()) {
+    if (!trimmedToken) {
       toast({
         title: 'Authentication required',
         description: 'Provide a GitHub personal access token to commit changes.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (!hasWriteAccess) {
+      toast({
+        title: 'Read-only access',
+        description: 'Your current credentials do not have push permissions for this repository.',
         variant: 'destructive',
       });
       return;
@@ -994,7 +1301,7 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
       });
       await Promise.all([loadContents(currentPath), loadCommits()]);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to commit workspace changes';
+      const message = formatGitHubErrorMessage(error, 'Failed to commit workspace changes');
       logStatus(message, 'error');
       finishOperation(operationId, 'error', message);
       toast({ title: 'Commit failed', description: message, variant: 'destructive' });
@@ -1008,7 +1315,8 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
     workspaceFiles,
     trackedEdits,
     pendingDeletions,
-    token,
+    trimmedToken,
+    hasWriteAccess,
     startOperation,
     request,
     bulkCommitMessage,
@@ -1064,7 +1372,7 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
     const task = await executeTask(instructionInput, {
       repo: { owner, name: repo, branch },
       files: filesForAgent,
-      token: token.trim() ? token.trim() : undefined,
+      token: trimmedToken || undefined,
       additionalContext: `Session lines changed: ${sessionLinesChanged}`,
       autoApply: autoApplyResults,
     });
@@ -1084,45 +1392,15 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
     branch,
     selectedContextFiles,
     executeTask,
-    token,
+    trimmedToken,
     sessionLinesChanged,
     autoApplyResults,
   ]);
 
-  const handleApplyGeneratedChange = useCallback(
+  const prepareChangePreview = useCallback(
     async (change: AgentGeneratedChange, taskId: string) => {
       if (!change?.path) return;
-
-      const changeKey = `${taskId}-${change.path}-${change.action}`;
-      setAppliedChanges((prev) => new Set(prev).add(changeKey));
-
-      if (change.action === 'delete') {
-        const original = change.previousContent ?? workspaceFiles[change.path]?.originalContent ?? '';
-        setPendingDeletions((prev) => (prev.includes(change.path) ? prev : [...prev, change.path]));
-        setWorkspaceFiles((prev) => ({
-          ...prev,
-          [change.path]: {
-            ...(prev[change.path] ?? {
-              path: change.path,
-              sha: '',
-              originalContent: original,
-            }),
-            content: '',
-            pendingDelete: true,
-          },
-        }));
-        setTrackedEdits((prev) => ({
-          ...prev,
-          [change.path]: {
-            isDirty: true,
-            lineDelta: -countLines(original),
-          },
-        }));
-        logStatus(`Marked ${change.path} for deletion`, 'success');
-        return;
-      }
-
-      if (typeof change.new_content !== 'string') {
+      if (change.action !== 'delete' && typeof change.new_content !== 'string') {
         toast({
           title: 'Agent output missing code',
           description: 'The agent did not provide file content for this change.',
@@ -1131,55 +1409,255 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
         return;
       }
 
-      const existing = workspaceFiles[change.path];
-      const originalContent = change.previousContent ?? existing?.originalContent ?? '';
-      const newContent = change.new_content;
-
-      if (!existing && change.action !== 'create') {
-        await loadFile(change.path);
+      if (!owner || !repo || !branch) {
+        toast({
+          title: 'Connect to GitHub',
+          description: 'Connect to a repository before applying agent changes.',
+          variant: 'destructive',
+        });
+        return;
       }
 
-      setWorkspaceFiles((prev) => ({
-        ...prev,
-        [change.path]: {
-          ...(prev[change.path] ?? {
-            path: change.path,
-            sha: prev[change.path]?.sha ?? '',
-            originalContent: originalContent,
-          }),
-          content: newContent,
-          pendingDelete: false,
-        },
-      }));
+      const proposedContent = change.action === 'delete' ? '' : (change.new_content ?? '');
 
-      setTrackedEdits((prev) => ({
-        ...prev,
-        [change.path]: {
-          isDirty: true,
-          lineDelta: countLines(newContent) - countLines(originalContent),
-        },
-      }));
+      setChangePreview({
+        taskId,
+        change,
+        originalContent: change.previousContent ?? workspaceFiles[change.path]?.originalContent ?? '',
+        proposedContent,
+        remoteSha: workspaceFiles[change.path]?.sha || undefined,
+        isLoading: true,
+        error: undefined,
+        warnings: [],
+      });
 
-      setPendingDeletions((prev) => prev.filter((item) => item !== change.path));
+      try {
+        let originalContent = change.previousContent ?? workspaceFiles[change.path]?.originalContent ?? '';
+        let remoteSha = workspaceFiles[change.path]?.sha || undefined;
+        const warnings: string[] = [];
 
-      if (selectedFile?.path === change.path) {
-        setSelectedFile((prev) =>
-          prev
-            ? {
-                ...prev,
-                content: newContent,
-                pendingDelete: false,
-              }
-            : prev
-        );
+        const workspaceEntry = workspaceFiles[change.path];
+        if (!workspaceEntry && change.action !== 'create') {
+          const response = await request<GitHubFileResponse>(
+            `/repos/${owner}/${repo}/contents/${encodePath(change.path)}?ref=${encodeURIComponent(branch)}`
+          );
+          if (response?.content && response.encoding === 'base64') {
+            originalContent = decodeContent(response.content);
+            remoteSha = response.sha;
+          } else {
+            warnings.push('Unable to download the current file from GitHub for preview.');
+          }
+        }
+
+        const baseline = originalContent ?? '';
+
+        if (
+          change.previousContent &&
+          baseline &&
+          change.previousContent.trim() !== baseline.trim()
+        ) {
+          warnings.push('Upstream version differs from the agent\'s baseline.');
+        }
+
+        if (trackedEdits[change.path]?.isDirty) {
+          warnings.push('You already have local edits to this file in the workspace.');
+        }
+
+        setChangePreview((prev) => {
+          if (!prev || prev.taskId !== taskId || prev.change.path !== change.path) {
+            return prev;
+          }
+          return {
+            ...prev,
+            originalContent: baseline,
+            proposedContent,
+            remoteSha,
+            isLoading: false,
+            error: undefined,
+            warnings,
+          };
+        });
+      } catch (error) {
+        const message = formatGitHubErrorMessage(error, 'Unable to load file for preview');
+        setChangePreview((prev) => {
+          if (!prev || prev.taskId !== taskId || prev.change.path !== change.path) {
+            return prev;
+          }
+          return {
+            ...prev,
+            originalContent: '',
+            proposedContent,
+            remoteSha: undefined,
+            isLoading: false,
+            error: message,
+            warnings: [],
+          };
+        });
       }
-
-      logStatus(`Applied agent change to ${change.path}`, 'success');
     },
-    [loadFile, logStatus, selectedFile?.path, toast, workspaceFiles]
+    [branch, owner, repo, request, toast, trackedEdits, workspaceFiles]
   );
 
+  const applyGeneratedChange = useCallback(
+    async (preview: ChangePreviewState) => {
+      const { change, taskId, originalContent, proposedContent, remoteSha } = preview;
+      if (!change?.path) {
+        return false;
+      }
+
+      const changeKey = `${taskId}-${change.path}-${change.action}`;
+      const workspaceEntry = workspaceFiles[change.path];
+      const hasLocalEdits = trackedEdits[change.path]?.isDirty;
+
+      if (hasLocalEdits) {
+        toast({
+          title: 'Local edits detected',
+          description: 'Revert or commit your workspace edits before applying the agent suggestion.',
+          variant: 'destructive',
+        });
+        return false;
+      }
+
+      if (
+        change.previousContent &&
+        originalContent &&
+        change.previousContent.trim() !== originalContent.trim()
+      ) {
+        toast({
+          title: 'Upstream changes detected',
+          description: 'Reload the file to reconcile with the latest commit before applying this change.',
+          variant: 'destructive',
+        });
+        return false;
+      }
+
+      try {
+        if (change.action === 'delete') {
+          const original = originalContent ?? workspaceEntry?.originalContent ?? '';
+          setPendingDeletions((prev) => (prev.includes(change.path) ? prev : [...prev, change.path]));
+          setWorkspaceFiles((prev) => ({
+            ...prev,
+            [change.path]: {
+              ...(prev[change.path] ?? {
+                path: change.path,
+                sha: remoteSha ?? '',
+                originalContent: original,
+              }),
+              content: '',
+              pendingDelete: true,
+              sha: remoteSha ?? prev[change.path]?.sha ?? '',
+            },
+          }));
+          setTrackedEdits((prev) => ({
+            ...prev,
+            [change.path]: {
+              isDirty: true,
+              lineDelta: -countLines(original),
+            },
+          }));
+          logStatus(`Marked ${change.path} for deletion`, 'success');
+        } else {
+          const nextContent = proposedContent;
+          if (typeof nextContent !== 'string') {
+            toast({
+              title: 'Agent output missing code',
+              description: 'The agent did not provide file content for this change.',
+              variant: 'destructive',
+            });
+            return false;
+          }
+
+          if (!workspaceEntry && change.action !== 'create') {
+            await loadFile(change.path);
+          }
+
+          const baseline = originalContent ?? change.previousContent ?? workspaceEntry?.originalContent ?? '';
+
+          setWorkspaceFiles((prev) => ({
+            ...prev,
+            [change.path]: {
+              ...(prev[change.path] ?? {
+                path: change.path,
+                sha: remoteSha ?? '',
+                originalContent: baseline,
+              }),
+              content: nextContent,
+              pendingDelete: false,
+              sha: remoteSha ?? prev[change.path]?.sha ?? '',
+            },
+          }));
+
+          setTrackedEdits((prev) => ({
+            ...prev,
+            [change.path]: {
+              isDirty: true,
+              lineDelta: countLines(nextContent) - countLines(baseline),
+            },
+          }));
+
+          setPendingDeletions((prev) => prev.filter((item) => item !== change.path));
+
+          if (selectedFile?.path === change.path) {
+            setSelectedFile((prev) =>
+              prev
+                ? {
+                    ...prev,
+                    content: nextContent,
+                    pendingDelete: false,
+                    sha: remoteSha ?? prev.sha,
+                  }
+                : prev
+            );
+          }
+
+          logStatus(`Queued agent changes for ${change.path}`, 'success');
+        }
+
+        setAppliedChanges((prev) => new Set(prev).add(changeKey));
+        return true;
+      } catch (error) {
+        const message = formatGitHubErrorMessage(error, 'Failed to apply agent change');
+        toast({ title: 'Apply failed', description: message, variant: 'destructive' });
+        logStatus(message, 'error');
+        return false;
+      }
+    },
+    [
+      loadFile,
+      logStatus,
+      selectedFile?.path,
+      setSelectedFile,
+      toast,
+      trackedEdits,
+      workspaceFiles,
+      setPendingDeletions,
+      setWorkspaceFiles,
+      setTrackedEdits,
+    ]
+  );
+
+  const closeChangePreview = useCallback(() => {
+    setChangePreview(null);
+  }, []);
+
+  const handleConfirmApplyChange = useCallback(async () => {
+    if (!changePreview || changePreview.isLoading || changePreview.error) {
+      return;
+    }
+
+    const success = await applyGeneratedChange(changePreview);
+    if (success) {
+      toast({
+        title: 'Agent change applied',
+        description: `${changePreview.change.path} is now staged in the workspace.`,
+      });
+      setChangePreview(null);
+    }
+  }, [applyGeneratedChange, changePreview, toast]);
+
   const isConnected = connectionState === 'connected' && !!repoInfo;
+  const hasWriteAccess = Boolean(repoInfo?.permissions?.push);
+  const canCommit = hasWriteAccess && Boolean(trimmedToken);
   const isDirty = selectedFile ? selectedFile.content !== selectedFile.originalContent : false;
   const sortedContents = useMemo(() => contents, [contents]);
   const breadcrumbs = useMemo(() => {
@@ -1218,6 +1696,12 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
     () => dirtyFilesCount > 0 || pendingDeletions.length > 0,
     [dirtyFilesCount, pendingDeletions]
   );
+  const previewWarnings = changePreview?.warnings ?? [];
+  const hasBlockingPreviewWarning = previewWarnings.some((warning) =>
+    /upstream|local edits/i.test(warning)
+  );
+  const previewApplyDisabled =
+    !changePreview || changePreview.isLoading || Boolean(changePreview.error) || hasBlockingPreviewWarning;
 
   return (
     <div className="space-y-6">
@@ -1253,6 +1737,12 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
                 {commits[0]?.sha.slice(0, 7) ?? '—'}
               </Badge>
             )}
+            {isConnected && (
+              <Badge variant={hasWriteAccess ? 'outline' : 'destructive'} className="gap-2">
+                <GitPullRequest className="h-4 w-4" />
+                {hasWriteAccess ? 'Write access' : 'Read only'}
+              </Badge>
+            )}
             {runningOperations.length > 0 && (
               <Badge variant="outline" className="gap-2">
                 <Loader2 className="h-4 w-4 animate-spin" />
@@ -1278,15 +1768,69 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor={`token-${agentId}`}>Personal access token (optional for read-only)</Label>
-                <Input
-                  id={`token-${agentId}`}
-                  type="password"
-                  placeholder="ghp_..."
-                  value={token}
-                  onChange={(event) => setToken(event.target.value)}
-                  autoComplete="off"
-                />
+                <div className="flex items-center justify-between gap-2">
+                  <Label htmlFor={`token-${agentId}`}>Personal access token</Label>
+                  <Badge variant={hasStoredToken ? 'secondary' : 'outline'}>
+                    {hasStoredToken ? 'Stored securely' : 'Not saved'}
+                  </Badge>
+                </div>
+                <div className="flex flex-col gap-2">
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-start">
+                    <Input
+                      id={`token-${agentId}`}
+                      type="password"
+                      placeholder={hasStoredToken ? 'Token stored securely' : 'ghp_...'}
+                      value={tokenInput}
+                      onChange={handleTokenInputChange}
+                      autoComplete="off"
+                      className="sm:flex-1"
+                      disabled={isTokenLoading}
+                    />
+                    <div className="flex gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={handlePersistTokenClick}
+                        disabled={
+                          isTokenSaving || (!tokenInput.trim() && !trimmedToken)
+                        }
+                      >
+                        {isTokenSaving ? (
+                          <span className="inline-flex items-center gap-2">
+                            <Loader2 className="h-4 w-4 animate-spin" /> Saving…
+                          </span>
+                        ) : (
+                          'Save token'
+                        )}
+                      </Button>
+                      {hasStoredToken && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          onClick={handleClearStoredToken}
+                          disabled={isTokenSaving}
+                        >
+                          Clear
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Provide a fine-grained PAT with <code>repo</code> scope for commits. Leave blank to browse
+                    repositories in read-only mode.
+                  </p>
+                  {tokenLastUpdated && (
+                    <p className="text-xs text-muted-foreground">
+                      Last saved {formatDate(tokenLastUpdated)}
+                    </p>
+                  )}
+                  {tokenError && <p className="text-xs text-destructive">{tokenError}</p>}
+                  {!tokenStorageAvailable && (
+                    <p className="text-xs text-destructive">
+                      Secure browser storage is unavailable; tokens will be cleared when you reload.
+                    </p>
+                  )}
+                </div>
               </div>
             </div>
 
@@ -1312,6 +1856,12 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
                 </div>
               )}
             </div>
+            {isConnected && !hasWriteAccess && (
+              <p className="mt-2 text-xs text-destructive">
+                The connected token can only read this repository. Commit and auto-apply actions are disabled until
+                you provide write access.
+              </p>
+            )}
           </Card>
 
           {isConnected && (
@@ -1373,6 +1923,12 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
                 <Separator orientation="vertical" className="hidden lg:block" />
                 <div className="lg:w-64 space-y-3 rounded-lg border border-border/60 p-4">
                   <p className="text-sm font-medium">Session stats</p>
+                  {dataErrors.stats && (
+                    <Alert variant="destructive">
+                      <AlertTitle>Metrics unavailable</AlertTitle>
+                      <AlertDescription>{dataErrors.stats}</AlertDescription>
+                    </Alert>
+                  )}
                   <div className="space-y-2 text-sm text-muted-foreground">
                     <div className="flex items-center justify-between">
                       <span>Tasks completed</span>
@@ -1563,7 +2119,7 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
                       )}
                     </div>
                     <div className="flex flex-wrap items-end gap-2">
-                      <Button className="w-full" onClick={handleSave} disabled={!isDirty || isSaving}>
+                      <Button className="w-full" onClick={handleSave} disabled={!isDirty || isSaving || !canCommit}>
                         {isSaving ? (
                           <span className="inline-flex items-center gap-2">
                             <Loader2 className="h-4 w-4 animate-spin" /> Saving...
@@ -1579,7 +2135,7 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
                         variant="secondary"
                         className="w-full"
                         onClick={handleCommitWorkspace}
-                        disabled={!hasWorkspaceChanges || isSaving}
+                        disabled={!hasWorkspaceChanges || isSaving || !canCommit}
                       >
                         <span className="inline-flex items-center gap-2">
                           <GitBranch className="h-4 w-4" /> Commit workspace
@@ -1602,6 +2158,11 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
                           </span>
                         )}
                       </Button>
+                      {!canCommit && (
+                        <p className="text-xs text-muted-foreground">
+                          Add a token with <code>repo</code> scope and write access to enable commits.
+                        </p>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -1621,6 +2182,13 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
                 <FileDiff className="h-5 w-5 text-primary" />
                 <h2 className="text-lg font-semibold">Agent output</h2>
               </div>
+
+              {dataErrors.tasks && (
+                <Alert variant="destructive">
+                  <AlertTitle>Task history unavailable</AlertTitle>
+                  <AlertDescription>{dataErrors.tasks}</AlertDescription>
+                </Alert>
+              )}
 
               {recentTasks.length === 0 ? (
                 <div className="rounded-lg border border-dashed border-border/60 p-6 text-center text-sm text-muted-foreground">
@@ -1698,10 +2266,10 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
                                     <Button
                                       size="sm"
                                       variant={isApplied ? 'ghost' : 'default'}
-                                      onClick={() => handleApplyGeneratedChange(change, task.id)}
+                                      onClick={() => prepareChangePreview(change, task.id)}
                                       disabled={isApplied}
                                     >
-                                      {isApplied ? 'Applied' : 'Apply'}
+                                      {isApplied ? 'Applied' : 'Review'}
                                     </Button>
                                   </div>
                                 );
@@ -1800,6 +2368,12 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
             </div>
 
             <div className="mt-4 space-y-3">
+              {dataErrors.activities && (
+                <Alert variant="destructive">
+                  <AlertTitle>Activity unavailable</AlertTitle>
+                  <AlertDescription>{dataErrors.activities}</AlertDescription>
+                </Alert>
+              )}
               {activities.length === 0 ? (
                 <div className="flex h-[160px] items-center justify-center text-sm text-muted-foreground">
                   No activity yet. Run an instruction or commit changes to populate the feed.
@@ -1825,6 +2399,12 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
             </div>
 
             <div className="mt-4 space-y-3">
+              {dataErrors.knowledge && (
+                <Alert variant="destructive">
+                  <AlertTitle>Knowledge unavailable</AlertTitle>
+                  <AlertDescription>{dataErrors.knowledge}</AlertDescription>
+                </Alert>
+              )}
               {knowledgeNodes.length === 0 ? (
                 <div className="flex h-[160px] items-center justify-center text-center text-sm text-muted-foreground">
                   Insights from completed agent runs will appear here, helping the system learn from every change.
@@ -1996,6 +2576,72 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
           </Card>
         </div>
       </div>
+
+      <Dialog
+        open={Boolean(changePreview)}
+        onOpenChange={(open) => {
+          if (!open) {
+            closeChangePreview();
+          }
+        }}
+      >
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>Review agent change</DialogTitle>
+            <DialogDescription>
+              {changePreview?.change.path}
+              {changePreview?.change.action && (
+                <Badge variant="outline" className="ml-2 uppercase">
+                  {changePreview.change.action}
+                </Badge>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+
+          {changePreview?.isLoading && (
+            <div className="flex items-center justify-center p-10">
+              <Loader2 className="h-6 w-6 animate-spin text-primary" />
+            </div>
+          )}
+
+          {changePreview?.error && (
+            <Alert variant="destructive">
+              <AlertTitle>Unable to prepare diff</AlertTitle>
+              <AlertDescription>{changePreview.error}</AlertDescription>
+            </Alert>
+          )}
+
+          {!changePreview?.isLoading && !changePreview?.error && (
+            <div className="space-y-4">
+              {previewWarnings.length > 0 && (
+                <Alert variant={hasBlockingPreviewWarning ? 'destructive' : 'default'}>
+                  <AlertTitle>Check before applying</AlertTitle>
+                  <AlertDescription>
+                    <ul className="list-disc space-y-1 pl-5">
+                      {previewWarnings.map((warning, index) => (
+                        <li key={index}>{warning}</li>
+                      ))}
+                    </ul>
+                  </AlertDescription>
+                </Alert>
+              )}
+              <CodeDiff
+                original={changePreview?.originalContent ?? ''}
+                updated={changePreview?.proposedContent ?? ''}
+              />
+            </div>
+          )}
+
+          <DialogFooter className="gap-2">
+            <Button variant="ghost" onClick={closeChangePreview}>
+              Cancel
+            </Button>
+            <Button onClick={handleConfirmApplyChange} disabled={previewApplyDisabled}>
+              {hasBlockingPreviewWarning ? 'Resolve conflicts' : 'Apply change'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

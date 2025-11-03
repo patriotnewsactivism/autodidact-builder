@@ -113,9 +113,24 @@ export const useAgentData = (userId: string | undefined) => {
   const [tasks, setTasks] = useState<AgentTask[]>([]);
   const [isExecutingTask, setIsExecutingTask] = useState(false);
   const [knowledgeNodes, setKnowledgeNodes] = useState<KnowledgeNode[]>([]);
+  const [dataErrors, setDataErrors] = useState<{
+    activities?: string;
+    stats?: string;
+    tasks?: string;
+    knowledge?: string;
+  }>({});
   const { toast } = useToast();
+  const setErrorFor = useCallback(
+    (scope: keyof typeof dataErrors, message: string | null) => {
+      setDataErrors((prev) => ({ ...prev, [scope]: message ?? undefined }));
+      if (message) {
+        toast({ title: 'Supabase error', description: message, variant: 'destructive' });
+      }
+    },
+    [toast]
+  );
   const mapTaskRow = useCallback((row: AgentTaskRow): AgentTask => {
-    const metadata = row.metadata && typeof row.metadata === 'object' 
+    const metadata = row.metadata && typeof row.metadata === 'object'
       ? (row.metadata as AgentTaskMetadata)
       : {} as AgentTaskMetadata;
     
@@ -143,9 +158,11 @@ export const useAgentData = (userId: string | undefined) => {
 
     if (error) {
       console.error('Error fetching activities:', error);
+      setErrorFor('activities', 'Unable to load recent activity.');
       return;
     }
 
+    setErrorFor('activities', null);
     setActivities(
       (data ?? []).map((a) => ({
         id: a.id,
@@ -155,7 +172,7 @@ export const useAgentData = (userId: string | undefined) => {
         status: a.status,
       }))
     );
-  }, [userId]);
+  }, [setErrorFor, userId]);
 
   const fetchStats = useCallback(async () => {
     if (!userId) return;
@@ -167,9 +184,11 @@ export const useAgentData = (userId: string | undefined) => {
 
     if (metricsError && metricsError.code !== 'PGRST116') {
       console.error('Error fetching metrics:', metricsError);
+      setErrorFor('stats', 'Unable to load agent metrics.');
       return;
     }
 
+    let knowledgeErrored = false;
     const { count: knowledgeCount, error: knowledgeError } = await supabase
       .from('knowledge_nodes')
       .select('id', { count: 'exact', head: true })
@@ -177,9 +196,14 @@ export const useAgentData = (userId: string | undefined) => {
 
     if (knowledgeError && knowledgeError.code !== 'PGRST116') {
       console.error('Error fetching knowledge count:', knowledgeError);
+      setErrorFor('stats', 'Unable to load knowledge statistics.');
+      knowledgeErrored = true;
     }
 
     if (metrics) {
+      if (!knowledgeErrored) {
+        setErrorFor('stats', null);
+      }
       setStats({
         tasksCompleted: metrics.tasks_completed ?? 0,
         linesChanged: metrics.lines_changed ?? 0,
@@ -189,7 +213,7 @@ export const useAgentData = (userId: string | undefined) => {
         autonomyLevel: metrics.autonomy_level ?? 92,
       });
     }
-  }, [userId]);
+  }, [setErrorFor, userId]);
 
   const fetchTasks = useCallback(async () => {
     if (!userId) return;
@@ -202,11 +226,13 @@ export const useAgentData = (userId: string | undefined) => {
 
     if (error) {
       console.error('Error fetching tasks:', error);
+      setErrorFor('tasks', 'Unable to load recent tasks.');
       return;
     }
 
+    setErrorFor('tasks', null);
     setTasks((data ?? []).map((row) => mapTaskRow(row as AgentTaskRow)));
-  }, [mapTaskRow, userId]);
+  }, [mapTaskRow, setErrorFor, userId]);
 
   const fetchKnowledgeNodes = useCallback(async () => {
     if (!userId) return;
@@ -219,9 +245,11 @@ export const useAgentData = (userId: string | undefined) => {
 
     if (error) {
       console.error('Error fetching knowledge nodes:', error);
+      setErrorFor('knowledge', 'Unable to load knowledge nodes.');
       return;
     }
 
+    setErrorFor('knowledge', null);
     setKnowledgeNodes(
       (data ?? []).map((node) => ({
         id: node.id,
@@ -233,7 +261,7 @@ export const useAgentData = (userId: string | undefined) => {
         usageCount: node.usage_count,
       }))
     );
-  }, [userId]);
+  }, [setErrorFor, userId]);
 
   const executeTask = useCallback(
     async (instruction: string, options?: ExecuteTaskOptions) => {
@@ -404,5 +432,6 @@ export const useAgentData = (userId: string | undefined) => {
     isExecutingTask,
     refreshAgentData,
     knowledgeNodes,
+    dataErrors,
   };
 };
