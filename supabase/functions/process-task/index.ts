@@ -521,7 +521,10 @@ serve(async (req) => {
     };
 
     let totalLinesChanged = 0;
-    let autoApplyResult: AutoApplyResult | null = null;
+    const autoApplyResult: AutoApplyResult = {
+      attempted: false,
+      success: false,
+    };
     const generatedChanges: Array<
       StepChange & {
         stepId: string;
@@ -602,7 +605,6 @@ serve(async (req) => {
           stepId: step.id,
           stepTitle: step.title,
           lineDelta,
-          previousContent: original,
           summary: stepResult.summary,
         });
       }
@@ -621,10 +623,7 @@ serve(async (req) => {
       });
     }
 
-    const autoApplyResult: AutoApplyResult = {
-      attempted: Boolean(metadata.autoApply),
-      success: false,
-    };
+    autoApplyResult.attempted = Boolean(metadata.autoApply);
 
     if (metadata.autoApply) {
       if (!metadata.repo) {
@@ -709,7 +708,7 @@ serve(async (req) => {
       .eq('id', taskId);
 
     if (generatedChanges.length > 0) {
-      await supabase.from('knowledge_nodes').insert({
+      const { error: knowledgeError } = await supabase.from('knowledge_nodes').insert({
         user_id: task.user_id,
         title: plan.summary?.slice(0, 120) ?? task.instruction.slice(0, 120),
         content: JSON.stringify({
@@ -720,7 +719,10 @@ serve(async (req) => {
         category: 'agent_outcome',
         confidence_score: 85,
         usage_count: 0,
-      }).catch(() => {});
+      });
+      if (knowledgeError) {
+        console.error('Failed to insert knowledge node:', knowledgeError);
+      }
     }
 
     const knowledgeDelta = generatedChanges.length > 0 ? 1 : 0;
