@@ -2,3 +2,15 @@ project_id = "uwqndlzadcyvwwzftslc"
 
 [functions.process-task]
 verify_jwt = false
+
+[functions.process-task-bedrock]
+verify_jwt = false
+
+[functions.bedrock-agent]
+verify_jwt = false
+
+[functions.create-embeddings]
+verify_jwt = false
+
+[functions.search-codebase]
+verify_jwt = false

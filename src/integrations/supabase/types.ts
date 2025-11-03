@@ -91,6 +91,139 @@ export type Database = {
         }
         Relationships: []
       }
+      agent_performance_metrics: {
+        Row: {
+          cost_usd: number | null
+          created_at: string | null
+          error_count: number | null
+          id: string
+          latency_ms: number | null
+          metadata: Json | null
+          model_used: string
+          success_rate: number | null
+          task_id: string | null
+          tokens_input: number | null
+          tokens_output: number | null
+          user_id: string
+        }
+        Insert: {
+          cost_usd?: number | null
+          created_at?: string | null
+          error_count?: number | null
+          id?: string
+          latency_ms?: number | null
+          metadata?: Json | null
+          model_used: string
+          success_rate?: number | null
+          task_id?: string | null
+          tokens_input?: number | null
+          tokens_output?: number | null
+          user_id: string
+        }
+        Update: {
+          cost_usd?: number | null
+          created_at?: string | null
+          error_count?: number | null
+          id?: string
+          latency_ms?: number | null
+          metadata?: Json | null
+          model_used?: string
+          success_rate?: number | null
+          task_id?: string | null
+          tokens_input?: number | null
+          tokens_output?: number | null
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "agent_performance_metrics_task_id_fkey"
+            columns: ["task_id"]
+            isOneToOne: false
+            referencedRelation: "tasks"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      codebase_embeddings: {
+        Row: {
+          branch: string
+          chunk_index: number
+          content_chunk: string
+          created_at: string | null
+          file_path: string
+          id: string
+          language: string | null
+          metadata: Json | null
+          repo_full_name: string
+          updated_at: string | null
+          user_id: string
+        }
+        Insert: {
+          branch: string
+          chunk_index: number
+          content_chunk: string
+          created_at?: string | null
+          file_path: string
+          id?: string
+          language?: string | null
+          metadata?: Json | null
+          repo_full_name: string
+          updated_at?: string | null
+          user_id: string
+        }
+        Update: {
+          branch?: string
+          chunk_index?: number
+          content_chunk?: string
+          created_at?: string | null
+          file_path?: string
+          id?: string
+          language?: string | null
+          metadata?: Json | null
+          repo_full_name?: string
+          updated_at?: string | null
+          user_id?: string
+        }
+        Relationships: []
+      }
+      conversation_memory: {
+        Row: {
+          content: string
+          created_at: string | null
+          id: string
+          metadata: Json | null
+          role: string
+          task_id: string | null
+          user_id: string
+        }
+        Insert: {
+          content: string
+          created_at?: string | null
+          id?: string
+          metadata?: Json | null
+          role: string
+          task_id?: string | null
+          user_id: string
+        }
+        Update: {
+          content?: string
+          created_at?: string | null
+          id?: string
+          metadata?: Json | null
+          role?: string
+          task_id?: string | null
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "conversation_memory_task_id_fkey"
+            columns: ["task_id"]
+            isOneToOne: false
+            referencedRelation: "tasks"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       knowledge_nodes: {
         Row: {
           category: string | null
