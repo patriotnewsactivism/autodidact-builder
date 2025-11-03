@@ -342,13 +342,43 @@ export function ModernAgentWorkspace({ onExecuteTask }: ModernAgentWorkspaceProp
             </TabsContent>
 
             <TabsContent value="diff" className="flex-1 m-0 p-0 overflow-hidden">
-              <ScrollArea className="h-full">
-                <div className="p-4">
-                  <p className="text-sm text-slate-400 text-center py-8">
-                    Diff viewer will show real-time code changes here
-                  </p>
-                </div>
-              </ScrollArea>
+              <div className="h-full bg-slate-900/50">
+                {runs.length > 0 && runs.some(r => r.changes.length > 0) ? (
+                  <ScrollArea className="h-full">
+                    <div className="p-4 space-y-4">
+                      {runs.flatMap(run =>
+                        run.changes.map((change: any, idx: number) => (
+                          <div key={`${run.id}-${idx}`} className="border border-slate-700 rounded-lg overflow-hidden bg-slate-800/30">
+                            <div className="px-4 py-2 bg-slate-800/50 border-b border-slate-700 flex items-center justify-between">
+                              <div className="flex items-center gap-2">
+                                <Badge variant="outline" className="text-xs">{run.agentId}</Badge>
+                                <span className="text-sm font-mono text-slate-300">{change.path}</span>
+                              </div>
+                              <div className="flex items-center gap-2 text-xs">
+                                <span className="text-green-400">+{change.lineDelta > 0 ? change.lineDelta : 0}</span>
+                                <span className="text-red-400">-{change.lineDelta < 0 ? Math.abs(change.lineDelta) : 0}</span>
+                              </div>
+                            </div>
+                            <ScrollArea className="h-64">
+                              <pre className="p-4 text-xs text-slate-300 font-mono">
+                                {change.new_content?.slice(0, 2000) || 'No content'}
+                              </pre>
+                            </ScrollArea>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </ScrollArea>
+                ) : (
+                  <div className="flex flex-col items-center justify-center h-full text-center p-8">
+                    <GitCompare className="h-12 w-12 text-slate-600 mb-4" />
+                    <h3 className="text-lg font-medium text-slate-300 mb-2">No changes yet</h3>
+                    <p className="text-sm text-slate-500">
+                      Code changes will appear here in real-time as agents work
+                    </p>
+                  </div>
+                )}
+              </div>
             </TabsContent>
 
             <TabsContent value="stats" className="flex-1 m-0 p-0 overflow-hidden">
