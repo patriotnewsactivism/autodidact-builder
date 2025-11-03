@@ -34,18 +34,37 @@ export const getSupabaseClient = (): SupabaseClient<Database> => {
   const anon = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY as string | undefined;
 
   if (!url || !anon) {
+    console.error('Supabase environment variables missing:', {
+      hasUrl: !!url,
+      hasAnon: !!anon
+    });
     throw new Error('Missing VITE_SUPABASE_URL or VITE_SUPABASE_PUBLISHABLE_KEY');
   }
 
-  client = createClient<Database>(url, anon, {
-    auth: {
-      storage: resolveAuthStorage(),
-      persistSession: true,
-      autoRefreshToken: true,
-    },
-  });
+  try {
+    client = createClient<Database>(url, anon, {
+      auth: {
+        storage: resolveAuthStorage(),
+        persistSession: true,
+        autoRefreshToken: true,
+      },
+    });
+  } catch (error) {
+    console.error('Failed to initialize Supabase client:', error);
+    throw error;
+  }
 
   return client;
 };
 
-export const supabase = getSupabaseClient();
+// Lazy initialization - only create when first accessed
+let supabaseInstance: SupabaseClient<Database> | null = null;
+
+export const supabase = new Proxy({} as SupabaseClient<Database>, {
+  get(_target, prop) {
+    if (!supabaseInstance) {
+      supabaseInstance = getSupabaseClient();
+    }
+    return (supabaseInstance as any)[prop];
+  }
+});

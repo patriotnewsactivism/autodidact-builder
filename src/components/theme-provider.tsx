@@ -41,7 +41,6 @@ export function ThemeProvider({
   children,
   defaultTheme = "system",
   storageKey = "ai-theme",
-  ...props
 }: ThemeProviderProps) {
   const [theme, setThemeState] = useState<Theme>(() => resolveStoredTheme(storageKey, defaultTheme));
 
@@ -69,7 +68,7 @@ export function ThemeProvider({
   };
 
   return (
-    <ThemeProviderContext.Provider {...props} value={value}>
+    <ThemeProviderContext.Provider value={value}>
       {children}
     </ThemeProviderContext.Provider>
   );
