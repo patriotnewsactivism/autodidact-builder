@@ -81,10 +81,11 @@ interface AgentTaskRow {
   status: string;
   result?: string | null;
   error_message?: string | null;
-  metadata?: AgentTaskMetadata | null;
+  metadata?: unknown;
   started_at?: string | null;
   completed_at?: string | null;
   created_at?: string | null;
+  user_id?: string;
 }
 
 interface ExecuteTaskOptions {
@@ -114,13 +115,17 @@ export const useAgentData = (userId: string | undefined) => {
   const [knowledgeNodes, setKnowledgeNodes] = useState<KnowledgeNode[]>([]);
   const { toast } = useToast();
   const mapTaskRow = useCallback((row: AgentTaskRow): AgentTask => {
+    const metadata = row.metadata && typeof row.metadata === 'object' 
+      ? (row.metadata as AgentTaskMetadata)
+      : {} as AgentTaskMetadata;
+    
     return {
       id: row.id,
       instruction: row.instruction,
       status: row.status,
       result: row.result ?? null,
       errorMessage: row.error_message ?? null,
-      metadata: (row.metadata ?? {}) as AgentTaskMetadata,
+      metadata,
       startedAt: row.started_at ? new Date(row.started_at) : null,
       completedAt: row.completed_at ? new Date(row.completed_at) : null,
       createdAt: row.created_at ? new Date(row.created_at) : new Date(),
@@ -200,7 +205,7 @@ export const useAgentData = (userId: string | undefined) => {
       return;
     }
 
-    setTasks((data ?? []).map(mapTaskRow));
+    setTasks((data ?? []).map((row) => mapTaskRow(row as AgentTaskRow)));
   }, [mapTaskRow, userId]);
 
   const fetchKnowledgeNodes = useCallback(async () => {
@@ -264,18 +269,18 @@ export const useAgentData = (userId: string | undefined) => {
 
         const { data: rows, error: taskError } = await supabase
           .from('tasks')
-          .insert({
+          .insert([{
             user_id: userId,
             instruction,
             status: 'pending',
-            metadata,
-          })
+            metadata: metadata as any,
+          }])
           .select()
           .single();
 
         if (taskError) throw taskError;
 
-        const taskRecord = mapTaskRow(rows);
+        const taskRecord = mapTaskRow(rows as AgentTaskRow);
         setTasks((prev) => [taskRecord, ...prev.filter((task) => task.id !== taskRecord.id)]);
 
         const headers: Record<string, string> = {};

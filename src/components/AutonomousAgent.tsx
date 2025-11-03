@@ -315,6 +315,7 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
   const [instructionInput, setInstructionInput] = useState('');
   const [contextSelections, setContextSelections] = useState<Record<string, boolean>>({});
   const [autoApplyResults, setAutoApplyResults] = useState(false);
+  const [appliedChanges, setAppliedChanges] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -1026,6 +1027,15 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
     }));
   }, []);
 
+  const availableContextFiles = useMemo(
+    () => Object.values(workspaceFiles).sort((a, b) => a.path.localeCompare(b.path)),
+    [workspaceFiles]
+  );
+  const selectedContextFiles = useMemo(
+    () => availableContextFiles.filter((file) => contextSelections[file.path]),
+    [availableContextFiles, contextSelections]
+  );
+
   const handleRunInstruction = useCallback(async () => {
     if (!instructionInput.trim()) {
       toast({
@@ -1080,8 +1090,11 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
   ]);
 
   const handleApplyGeneratedChange = useCallback(
-    async (change: AgentGeneratedChange) => {
+    async (change: AgentGeneratedChange, taskId: string) => {
       if (!change?.path) return;
+
+      const changeKey = `${taskId}-${change.path}-${change.action}`;
+      setAppliedChanges((prev) => new Set(prev).add(changeKey));
 
       if (change.action === 'delete') {
         const original = change.previousContent ?? workspaceFiles[change.path]?.originalContent ?? '';
@@ -1191,15 +1204,7 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
     [trackedEdits]
   );
   const operationsToDisplay = useMemo(() => operations.slice(0, 8), [operations]);
-  const availableContextFiles = useMemo(
-    () => Object.values(workspaceFiles).sort((a, b) => a.path.localeCompare(b.path)),
-    [workspaceFiles]
-  );
-  const selectedContextFiles = useMemo(
-    () => availableContextFiles.filter((file) => contextSelections[file.path]),
-    [availableContextFiles, contextSelections]
-  );
-  const recentTasks = useMemo<AgentTaskRecord[]>(() => 
+  const recentTasks = useMemo<AgentTaskRecord[]>(() =>
     tasks.map(t => ({
       ...t,
       metadata: {
@@ -1693,7 +1698,7 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
                                     <Button
                                       size="sm"
                                       variant={isApplied ? 'ghost' : 'default'}
-                                      onClick={() => handleApplyGeneratedChange(change)}
+                                      onClick={() => handleApplyGeneratedChange(change, task.id)}
                                       disabled={isApplied}
                                     >
                                       {isApplied ? 'Applied' : 'Apply'}
