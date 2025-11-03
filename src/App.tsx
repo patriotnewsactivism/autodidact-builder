@@ -4,10 +4,11 @@ import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { ThemeProvider } from "@/components/theme-provider";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { Navigation } from "@/components/navigation";
+import { useAuth } from "@/auth/AuthProvider";
 
 const Index = React.lazy(() => import("./pages/Index"));
 const AutonomousAgentPage = React.lazy(() => import("./pages/AutonomousAgent"));
@@ -86,9 +87,28 @@ const ProtectedRoute: React.FC<{ children: React.ReactNode; requireAuth?: boolea
   children,
   requireAuth = false,
 }) => {
-  if (requireAuth) {
-    // Add authentication logic if certain routes must be protected.
+  const { user, loading } = useAuth();
+  const location = useLocation();
+
+  if (!requireAuth) {
+    return <>{children}</>;
   }
+
+  if (loading) {
+    return (
+      <div className="flex min-h-[60vh] items-center justify-center">
+        <div className="space-y-3 text-center">
+          <LoadingSpinner size="lg" />
+          <p className="text-sm text-muted-foreground">Validating your session…</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <Navigate to="/" state={{ from: location }} replace />;
+  }
+
   return <>{children}</>;
 };
 
@@ -114,7 +134,7 @@ const App: React.FC = () => {
                     <Route
                       path="/agent"
                       element={
-                        <ProtectedRoute>
+                        <ProtectedRoute requireAuth>
                           <AutonomousAgentPage />
                         </ProtectedRoute>
                       }
