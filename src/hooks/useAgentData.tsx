@@ -1,6 +1,45 @@
 import { useCallback, useEffect, useState } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
+import { z } from 'zod';
+
+// Zod schemas for runtime validation
+const AgentTaskFileContextSchema = z.object({
+  path: z.string(),
+  content: z.string(),
+  sha: z.string().nullable().optional(),
+});
+
+const AutoApplyResultSchema = z.object({
+  attempted: z.boolean(),
+  success: z.boolean(),
+  commitSha: z.string().optional(),
+  error: z.string().optional(),
+  filesChanged: z.array(z.string()).optional(),
+});
+
+const AgentTaskMetadataSchema = z.object({
+  repo: z.object({
+    owner: z.string(),
+    name: z.string(),
+    branch: z.string(),
+  }).optional(),
+  files: z.array(AgentTaskFileContextSchema).optional(),
+  additionalContext: z.string().optional(),
+  autoApply: z.boolean().optional(),
+  plan: z.unknown().optional(),
+  generatedChanges: z.unknown().optional(),
+  stats: z.object({
+    linesChanged: z.number().optional(),
+    linesAdded: z.number().optional(),
+    linesRemoved: z.number().optional(),
+    stepsExecuted: z.number().optional(),
+    changesProposed: z.number().optional(),
+    model: z.string().optional(),
+  }).optional(),
+  autoApplyResult: AutoApplyResultSchema.optional(),
+  githubTokenUsed: z.boolean().optional(),
+}).passthrough(); // Allow additional properties
 
 interface Activity {
   id: string;
@@ -46,10 +85,14 @@ interface AgentTaskMetadata {
   generatedChanges?: unknown;
   stats?: {
     linesChanged?: number;
+    linesAdded?: number;
+    linesRemoved?: number;
     stepsExecuted?: number;
     changesProposed?: number;
+    model?: string;
   };
   autoApplyResult?: AutoApplyResult;
+  githubTokenUsed?: boolean;
   [key: string]: unknown;
 }
 
@@ -130,10 +173,19 @@ export const useAgentData = (userId: string | undefined) => {
     [toast]
   );
   const mapTaskRow = useCallback((row: AgentTaskRow): AgentTask => {
-    const metadata = row.metadata && typeof row.metadata === 'object'
-      ? (row.metadata as AgentTaskMetadata)
-      : {} as AgentTaskMetadata;
-    
+    // Validate metadata with Zod schema
+    let metadata: AgentTaskMetadata = {};
+    if (row.metadata && typeof row.metadata === 'object') {
+      const validationResult = AgentTaskMetadataSchema.safeParse(row.metadata);
+      if (validationResult.success) {
+        metadata = validationResult.data;
+      } else {
+        console.warn('Invalid task metadata format:', validationResult.error);
+        // Attempt to extract whatever valid properties we can
+        metadata = row.metadata as AgentTaskMetadata;
+      }
+    }
+
     return {
       id: row.id,
       instruction: row.instruction,
@@ -143,7 +195,7 @@ export const useAgentData = (userId: string | undefined) => {
       metadata,
       startedAt: row.started_at ? new Date(row.started_at) : null,
       completedAt: row.completed_at ? new Date(row.completed_at) : null,
-      createdAt: row.created_at ? new Date(row.created_at) : new Date(),
+      createdAt: row.created_at ? new Date(row.created_at) : new Date(), // Keep current time as fallback for new tasks
     };
   }, []);
 
@@ -295,13 +347,16 @@ export const useAgentData = (userId: string | undefined) => {
           metadata.autoApply = options.autoApply;
         }
 
+        // Validate metadata before inserting
+        const validatedMetadata = AgentTaskMetadataSchema.parse(metadata);
+
         const { data: rows, error: taskError } = await supabase
           .from('tasks')
           .insert([{
             user_id: userId,
             instruction,
             status: 'pending',
-            metadata: metadata as any,
+            metadata: validatedMetadata,
           }])
           .select()
           .single();

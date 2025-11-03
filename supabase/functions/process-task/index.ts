@@ -1,9 +1,10 @@
 import 'https://deno.land/x/xhr@0.1.0/mod.ts';
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3';
+import Anthropic from 'npm:@anthropic-ai/sdk@^0.68.0';
 
 type ChatMessage = {
-  role: 'system' | 'user' | 'assistant';
+  role: 'user' | 'assistant';
   content: string;
 };
 
@@ -69,14 +70,9 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-github-token',
 };
 
-const MODEL_ENDPOINT =
-  Deno.env.get('OLLAMA_ENDPOINT') ??
-  Deno.env.get('MODEL_URL');
-const MODEL_NAME =
-  Deno.env.get('OLLAMA_MODEL') ??
-  Deno.env.get('MODEL_NAME') ??
-  'phi4';
-
+// AI Configuration - Claude Sonnet 4 via Anthropic API
+const ANTHROPIC_API_KEY = Deno.env.get('ANTHROPIC_API_KEY');
+const MODEL_NAME = 'claude-sonnet-4-20250514';
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL');
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
 
@@ -84,9 +80,9 @@ const ensureEnv = () => {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
     throw new Error('Missing Supabase configuration');
   }
-  if (!MODEL_ENDPOINT) {
+  if (!ANTHROPIC_API_KEY) {
     throw new Error(
-      'Model endpoint not configured. Set OLLAMA_ENDPOINT (recommended) or MODEL_URL for a compatible chat API.'
+      'ANTHROPIC_API_KEY not configured. Add your Anthropic API key to environment variables.'
     );
   }
 };
@@ -102,8 +98,11 @@ const stripJsonCodeFence = (value: string) => {
 const safeParseJson = <T>(value: string, fallback: T): T => {
   try {
     const cleaned = stripJsonCodeFence(value);
-    return JSON.parse(cleaned) as T;
-  } catch (_error) {
+    const parsed = JSON.parse(cleaned);
+    return parsed as T;
+  } catch (error) {
+    console.warn('JSON parse failed, using fallback:', error instanceof Error ? error.message : 'Unknown error');
+    console.warn('Raw value:', value.slice(0, 500));
     return fallback;
   }
 };
@@ -326,36 +325,40 @@ const commitAutoAppliedChanges = async (
   };
 };
 
-const callModel = async (messages: ChatMessage[], expectJson: boolean) => {
-  const body: Record<string, unknown> = {
-    model: MODEL_NAME,
-    messages,
-    stream: false,
-  };
-
-  if (expectJson) {
-    body.format = 'json';
-  }
-
-  const response = await fetch(`${MODEL_ENDPOINT}/api/chat`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+// Claude API integration
+const callClaude = async (
+  messages: ChatMessage[],
+  systemPrompt: string,
+  expectJson: boolean
+): Promise<string> => {
+  const client = new Anthropic({
+    apiKey: ANTHROPIC_API_KEY!,
   });
 
-  if (!response.ok) {
-    const errText = await response.text();
-    throw new Error(`Model request failed (${response.status}): ${errText}`);
-  }
+  try {
+    const response = await client.messages.create({
+      model: MODEL_NAME,
+      max_tokens: 8000,
+      temperature: 0.7,
+      system: systemPrompt,
+      messages: messages.map(msg => ({
+        role: msg.role,
+        content: msg.content,
+      })),
+    });
 
-  const data = await response.json();
-  if (typeof data === 'string') return data;
-  if (data?.message?.content) return data.message.content as string;
-  if (typeof data?.response === 'string') return data.response;
-  if (Array.isArray(data?.messages)) {
-    return data.messages.map((item: { content?: string }) => item.content ?? '').join('\n');
+    if (response.content && response.content.length > 0) {
+      const textBlock = response.content[0];
+      if (textBlock.type === 'text') {
+        return textBlock.text;
+      }
+    }
+
+    throw new Error('Invalid response from Claude API');
+  } catch (error) {
+    console.error('Claude API error:', error);
+    throw new Error(`Claude API request failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
-  return JSON.stringify(data);
 };
 
 serve(async (req) => {
@@ -370,8 +373,8 @@ serve(async (req) => {
 
     parsedBody = await req.json();
     const { taskId } = parsedBody;
-    if (!taskId) {
-      throw new Error('Missing taskId in request body');
+    if (!taskId || typeof taskId !== 'string') {
+      throw new Error('Missing or invalid taskId in request body');
     }
 
     const supabase = createClient(SUPABASE_URL!, SUPABASE_SERVICE_ROLE_KEY!);
@@ -381,7 +384,7 @@ serve(async (req) => {
       .from('tasks')
       .select('*')
       .eq('id', taskId)
-      .single();
+      .maybeSingle();
 
     if (taskError || !task) {
       throw new Error('Task not found');
@@ -428,29 +431,48 @@ serve(async (req) => {
       content: typeof item.content === 'string' ? item.content : JSON.stringify(item.content),
     }));
 
-    const planPrompt: ChatMessage[] = [
-      {
-        role: 'system',
-        content:
-          'You are AutoDidact, an autonomous coding agent. Produce concise JSON plans that break work into actionable steps. The JSON MUST follow {"summary": string, "steps": [{"id": string, "title": string, "objective": string, "target_files": [{"path": string}]}]}.',
-      },
-      {
-        role: 'user',
-        content: JSON.stringify({
-          instruction: task.instruction,
-          repo: metadata.repo ?? null,
-          files: filesForPrompt,
-          knowledge: knowledgeContext,
-          hints: metadata.additionalContext ?? null,
-        }),
-      },
-    ];
+    // Planning phase with Claude
+    const planSystemPrompt = `You are AutoDidact, an elite autonomous coding agent built with Claude Sonnet 4.
 
-    const rawPlan = await callModel(planPrompt, true);
+Your task is to analyze the user's instruction and create a precise, actionable plan.
+
+CRITICAL RULES:
+1. Respond ONLY with valid JSON - no markdown, no code fences, no explanations
+2. Break complex tasks into 2-5 clear steps
+3. Each step should have specific, targeted files
+4. Be thorough but efficient
+
+Required JSON format:
+{
+  "summary": "Brief description of what will be accomplished",
+  "steps": [
+    {
+      "id": "step_1",
+      "title": "Clear action title",
+      "objective": "Detailed explanation of what this step achieves",
+      "target_files": [{"path": "relative/file/path.ext"}]
+    }
+  ]
+}`;
+
+    const planUserMessage = JSON.stringify({
+      instruction: task.instruction,
+      repo: metadata.repo ?? null,
+      files: filesForPrompt,
+      knowledge: knowledgeContext,
+      hints: metadata.additionalContext ?? null,
+    }, null, 2);
+
+    const rawPlan = await callClaude(
+      [{ role: 'user', content: planUserMessage }],
+      planSystemPrompt,
+      true
+    );
+
     const plan = safeParseJson<PlanResponse>(rawPlan, { summary: '', steps: [] });
 
     if (!plan.steps || plan.steps.length === 0) {
-      throw new Error('Model returned an empty plan');
+      throw new Error('Claude returned an empty plan. Raw response: ' + rawPlan.slice(0, 200));
     }
 
     await supabase.from('activities').insert({
@@ -458,10 +480,11 @@ serve(async (req) => {
       task_id: taskId,
       type: 'ai',
       status: 'progress',
-      message: `Planning ${plan.steps.length} step(s)`,
+      message: `🎯 Planned ${plan.steps.length} step(s): ${plan.summary || 'Processing task'}`,
       metadata: {
         summary: plan.summary ?? '',
         steps: plan.steps.map((step) => ({ id: step.id, title: step.title })),
+        model: MODEL_NAME,
       },
     });
 
@@ -489,7 +512,7 @@ serve(async (req) => {
             task_id: taskId,
             type: 'file',
             status: 'progress',
-            message: `Fetched ${path} from GitHub for context`,
+            message: `📥 Fetched ${path} from GitHub (${countLines(fetched.content)} lines)`,
           });
           return fetched;
         }
@@ -499,7 +522,7 @@ serve(async (req) => {
           task_id: taskId,
           type: 'error',
           status: 'error',
-          message: `Failed to load ${path} from GitHub: ${
+          message: `❌ Failed to load ${path}: ${
             error instanceof Error ? error.message : 'Unknown error'
           }`,
         });
@@ -513,7 +536,7 @@ serve(async (req) => {
           task_id: taskId,
           type: 'warning',
           status: 'warning',
-          message: `Context file ${path} not found in repository`,
+          message: `⚠️ Context file ${path} not found in repository (will be created if needed)`,
         });
       }
 
@@ -521,6 +544,8 @@ serve(async (req) => {
     };
 
     let totalLinesChanged = 0;
+    let totalLinesAdded = 0;
+    let totalLinesRemoved = 0;
     const autoApplyResult: AutoApplyResult = {
       attempted: false,
       success: false,
@@ -534,14 +559,17 @@ serve(async (req) => {
       }
     > = [];
 
-    for (const step of plan.steps) {
+    // Execute each step with Claude
+    for (let i = 0; i < plan.steps.length; i++) {
+      const step = plan.steps[i];
+
       await supabase.from('activities').insert({
         user_id: task.user_id,
         task_id: taskId,
         type: 'ai',
         status: 'progress',
-        message: `Executing step: ${step.title}`,
-        metadata: { stepId: step.id },
+        message: `⚙️ Step ${i + 1}/${plan.steps.length}: ${step.title}`,
+        metadata: { stepId: step.id, stepNumber: i + 1, totalSteps: plan.steps.length },
       });
 
       const stepFiles =
@@ -558,25 +586,44 @@ serve(async (req) => {
         content: (fileSnapshots.get(path)?.content ?? '').slice(0, 10000),
       }));
 
-      const stepPrompt: ChatMessage[] = [
-        {
-          role: 'system',
-          content:
-            'You are AutoDidact executing a coding step. Respond with strict JSON using {"summary": string, "changes": [{"path": string, "action": "update"|"create"|"delete", "description": string, "language": string, "new_content": string}]}. Always include full file content in new_content for update/create.',
-        },
-        {
-          role: 'user',
-          content: JSON.stringify({
-            instruction: task.instruction,
-            step,
-            repo: metadata.repo ?? null,
-            files: stepFilePayload,
-            knowledge: knowledgeContext,
-          }),
-        },
-      ];
+      const stepSystemPrompt = `You are AutoDidact executing step ${i + 1} of ${plan.steps.length} in your coding plan.
 
-      const rawStep = await callModel(stepPrompt, true);
+CRITICAL RULES:
+1. Respond ONLY with valid JSON - no markdown, no code fences
+2. Provide COMPLETE file content in new_content (never partial updates)
+3. Be precise and production-ready
+4. Include thoughtful comments
+5. Follow best practices for the language
+
+Required JSON format:
+{
+  "summary": "What was accomplished in this step",
+  "changes": [
+    {
+      "path": "relative/file/path.ext",
+      "action": "update|create|delete",
+      "description": "What changed and why",
+      "language": "javascript|typescript|python|etc",
+      "new_content": "FULL FILE CONTENT HERE (omit only for delete action)"
+    }
+  ],
+  "insights": ["Optional: Key decisions made", "Optional: Gotchas to watch"]
+}`;
+
+      const stepUserMessage = JSON.stringify({
+        instruction: task.instruction,
+        step: step,
+        repo: metadata.repo ?? null,
+        files: stepFilePayload,
+        knowledge: knowledgeContext,
+      }, null, 2);
+
+      const rawStep = await callClaude(
+        [{ role: 'user', content: stepUserMessage }],
+        stepSystemPrompt,
+        true
+      );
+
       const stepResult = safeParseJson<StepResponse>(rawStep, { summary: '', changes: [] });
 
       for (const change of stepResult.changes ?? []) {
@@ -586,10 +633,21 @@ serve(async (req) => {
         let lineDelta = 0;
 
         if (change.action === 'delete') {
-          lineDelta = -countLines(original);
+          const linesDeleted = countLines(original);
+          lineDelta = -linesDeleted;
+          totalLinesRemoved += linesDeleted;
           fileSnapshots.delete(change.path);
         } else if (typeof change.new_content === 'string') {
-          lineDelta = countLines(change.new_content) - countLines(original);
+          const newLineCount = countLines(change.new_content);
+          const oldLineCount = countLines(original);
+          lineDelta = newLineCount - oldLineCount;
+
+          if (lineDelta > 0) {
+            totalLinesAdded += lineDelta;
+          } else {
+            totalLinesRemoved += Math.abs(lineDelta);
+          }
+
           fileSnapshots.set(change.path, {
             path: change.path,
             content: change.new_content,
@@ -609,16 +667,21 @@ serve(async (req) => {
         });
       }
 
+      const changesSummary = stepResult.changes?.length
+        ? stepResult.changes.map(c => `${c.action} ${c.path}`).join(', ')
+        : 'no changes';
+
       await supabase.from('activities').insert({
         user_id: task.user_id,
         task_id: taskId,
         type: 'code',
         status: 'success',
-        message: `Completed step: ${step.title}`,
+        message: `✅ Completed: ${step.title} (${changesSummary})`,
         metadata: {
           stepId: step.id,
           summary: stepResult.summary,
           filesChanged: stepResult.changes?.map((change) => change.path) ?? [],
+          insights: stepResult.insights,
         },
       });
     }
@@ -635,7 +698,7 @@ serve(async (req) => {
           task_id: taskId,
           type: 'warning',
           status: 'warning',
-          message: 'Auto-apply skipped: GitHub token is required',
+          message: '⚠️ Auto-apply skipped: GitHub token is required',
         });
       } else if (generatedChanges.length === 0) {
         autoApplyResult.error = 'No generated changes available to apply';
@@ -645,7 +708,7 @@ serve(async (req) => {
           task_id: taskId,
           type: 'ai',
           status: 'progress',
-          message: `Auto-applying ${generatedChanges.length} change(s) to GitHub`,
+          message: `🚀 Auto-applying ${generatedChanges.length} change(s) to ${metadata.repo.branch}...`,
         });
 
         try {
@@ -664,9 +727,10 @@ serve(async (req) => {
             task_id: taskId,
             type: 'success',
             status: 'success',
-            message: `Auto-apply commit ${commitInfo.commitSha.slice(0, 7)} pushed to ${metadata.repo.branch}`,
+            message: `🎉 Auto-applied to ${metadata.repo.branch}: ${commitInfo.commitSha.slice(0, 7)} (${commitInfo.filesChanged.length} files)`,
             metadata: {
               filesChanged: commitInfo.filesChanged,
+              commitSha: commitInfo.commitSha,
             },
           });
         } catch (error) {
@@ -676,7 +740,7 @@ serve(async (req) => {
             task_id: taskId,
             type: 'error',
             status: 'error',
-            message: `Auto-apply failed: ${autoApplyResult.error}`,
+            message: `❌ Auto-apply failed: ${autoApplyResult.error}`,
           });
         }
       }
@@ -690,8 +754,11 @@ serve(async (req) => {
       generatedChanges,
       stats: {
         linesChanged: totalLinesChanged,
+        linesAdded: totalLinesAdded,
+        linesRemoved: totalLinesRemoved,
         stepsExecuted: plan.steps.length,
         changesProposed: generatedChanges.length,
+        model: MODEL_NAME,
       },
       githubTokenUsed: Boolean(githubToken),
       autoApplyResult,
@@ -715,9 +782,11 @@ serve(async (req) => {
           instruction: task.instruction,
           summary: plan.summary,
           changes: generatedChanges,
+          model: MODEL_NAME,
+          timestamp: new Date().toISOString(),
         }),
         category: 'agent_outcome',
-        confidence_score: 85,
+        confidence_score: 90,
         usage_count: 0,
       });
       if (knowledgeError) {
@@ -742,8 +811,8 @@ serve(async (req) => {
           tasks_completed: (existingMetrics.tasks_completed ?? 0) + 1,
           ai_decisions: (existingMetrics.ai_decisions ?? 0) + aiDecisionsDelta,
           knowledge_nodes: (existingMetrics.knowledge_nodes ?? 0) + knowledgeDelta,
-          autonomy_level: existingMetrics.autonomy_level ?? 92,
-          learning_score: existingMetrics.learning_score ?? 75,
+          autonomy_level: Math.min(100, (existingMetrics.autonomy_level ?? 92) + 1),
+          learning_score: Math.min(100, (existingMetrics.learning_score ?? 75) + 2),
           updated_at: new Date().toISOString(),
         })
         .eq('user_id', task.user_id);
@@ -764,10 +833,14 @@ serve(async (req) => {
       task_id: taskId,
       type: 'success',
       status: 'success',
-      message: `Agent task completed`,
+      message: `🎊 Task completed! Changed ${totalLinesChanged} lines (+${totalLinesAdded}/-${totalLinesRemoved}) across ${generatedChanges.length} files`,
       metadata: {
         linesChanged: totalLinesChanged,
+        linesAdded: totalLinesAdded,
+        linesRemoved: totalLinesRemoved,
+        filesChanged: generatedChanges.length,
         autoApply: metadata.autoApply ?? false,
+        model: MODEL_NAME,
       },
     });
 
@@ -778,6 +851,12 @@ serve(async (req) => {
         generatedChanges,
         linesChanged: totalLinesChanged,
         autoApplyResult,
+        stats: {
+          linesAdded: totalLinesAdded,
+          linesRemoved: totalLinesRemoved,
+          filesModified: generatedChanges.length,
+          model: MODEL_NAME,
+        },
       }),
       {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
