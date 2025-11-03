@@ -1,12 +1,17 @@
-// Optional: Lazy-load Auth UI if used
-// src/components/Login.tsx
-import { Suspense, lazy } from 'react';
-const AuthUI = lazy(() => import('@supabase/auth-ui-react'));
+import { Auth } from '@supabase/auth-ui-react';
+import { ThemeSupa } from '@supabase/auth-ui-shared';
+import { supabase } from '@/integrations/supabase/client';
 
 export default function Login() {
   return (
-    <Suspense fallback={null}>
-      <AuthUI /* props */ />
-    </Suspense>
+    <div className="min-h-screen flex items-center justify-center bg-background p-4">
+      <div className="w-full max-w-md">
+        <Auth
+          supabaseClient={supabase}
+          appearance={{ theme: ThemeSupa }}
+          providers={[]}
+        />
+      </div>
+    </div>
   );
 }

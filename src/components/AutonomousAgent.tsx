@@ -1199,7 +1199,16 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
     () => availableContextFiles.filter((file) => contextSelections[file.path]),
     [availableContextFiles, contextSelections]
   );
-  const recentTasks = useMemo<AgentTaskRecord[]>(() => tasks.slice(0, 8), [tasks]);
+  const recentTasks = useMemo<AgentTaskRecord[]>(() => 
+    tasks.map(t => ({
+      ...t,
+      metadata: {
+        ...t.metadata,
+        generatedChanges: (t.metadata.generatedChanges as AgentGeneratedChange[] | undefined) ?? []
+      }
+    })).slice(0, 8), 
+    [tasks]
+  );
   const hasWorkspaceChanges = useMemo(
     () => dirtyFilesCount > 0 || pendingDeletions.length > 0,
     [dirtyFilesCount, pendingDeletions]
@@ -1630,9 +1639,9 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
                             <p className="font-semibold">{task.instruction}</p>
                             <p className="text-xs text-muted-foreground">
                               {task.createdAt ? formatDate(task.createdAt) : ''}
-                              {summaryStats.linesChanged !== undefined && (
+                              {task.metadata.stats?.linesChanged !== undefined && (
                                 <span className="ml-2">
-                                  • {summaryStats.linesChanged?.toLocaleString()} lines suggested
+                                  • {task.metadata.stats.linesChanged.toLocaleString()} lines suggested
                                 </span>
                               )}
                             </p>
@@ -1650,79 +1659,60 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
                               autoApply.success ? 'text-emerald-500' : 'text-destructive'
                             }`}
                           >
-                            Auto-apply {autoApply.success ? 'succeeded' : 'failed'}
-                            {autoApply.commitSha
-                              ? ` – ${autoApply.commitSha.slice(0, 7)}`
-                              : ''}
-                            {autoApply.filesChanged?.length
-                              ? ` · ${autoApply.filesChanged.length} file${
-                                  autoApply.filesChanged.length === 1 ? '' : 's'
-                                }`
-                              : ''}
-                            {!autoApply.success && autoApply.error ? ` · ${autoApply.error}` : ''}
+                            {autoApply.success
+                              ? `✓ Auto-applied ${autoApply.filesChanged?.length ?? 0} file(s) to ${task.metadata.repo?.branch ?? 'branch'}`
+                              : `✗ Auto-apply failed: ${autoApply.error ?? 'Unknown error'}`}
+                            {autoApply.commitSha && ` (${autoApply.commitSha.slice(0, 7)})`}
                           </p>
                         )}
 
                         {changes.length > 0 ? (
-                          <div className="space-y-3">
-                            {changes.map((change, index) => (
-                              <div
-                                key={`${task.id}-${change.path}-${index}`}
-                                className="space-y-2 rounded-md border border-dashed border-border/60 p-3"
-                              >
-                                <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-                                  <div>
-                                    <p className="font-medium">{change.path}</p>
-                                    <p className="text-xs text-muted-foreground">
-                                      {change.action} - delta {change.lineDelta ?? 0} lines
-                                    </p>
-                                  </div>
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    onClick={() => handleApplyGeneratedChange(change)}
+                          <div className="space-y-2">
+                            <p className="text-xs font-medium">Generated Changes ({changes.length}):</p>
+                            <div className="max-h-64 space-y-2 overflow-y-auto">
+                              {changes.slice(0, 3).map((change, idx) => {
+                                const isApplied = appliedChanges.has(
+                                  `${task.id}-${change.path}-${change.action}`
+                                );
+                                return (
+                                  <div
+                                    key={idx}
+                                    className="flex flex-col gap-2 rounded-md border border-border/60 p-3 text-xs sm:flex-row sm:items-center sm:justify-between"
                                   >
-                                    Apply to workspace
-                                  </Button>
-                                </div>
-                                {change.summary && (
-                                  <p className="text-xs text-muted-foreground">{change.summary}</p>
-                                )}
-                                {change.description && (
-                                  <p className="text-xs text-muted-foreground">{change.description}</p>
-                                )}
-                              </div>
-                            ))}
+                                    <div className="flex-1 space-y-1">
+                                      <p className="font-medium">
+                                        {change.path}
+                                        <Badge variant="secondary" className="ml-2">
+                                          {change.action}
+                                        </Badge>
+                                      </p>
+                                      {change.description && (
+                                        <p className="text-muted-foreground">{change.description}</p>
+                                      )}
+                                    </div>
+                                    <Button
+                                      size="sm"
+                                      variant={isApplied ? 'ghost' : 'default'}
+                                      onClick={() => handleApplyGeneratedChange(change)}
+                                      disabled={isApplied}
+                                    >
+                                      {isApplied ? 'Applied' : 'Apply'}
+                                    </Button>
+                                  </div>
+                                );
+                              })}
+                              {changes.length > 3 && (
+                                <p className="text-xs text-muted-foreground">
+                                  + {changes.length - 3} more change(s)
+                                </p>
+                              )}
+                            </div>
                           </div>
-                        ) : (
+                        ) : task.status === 'completed' ? (
                             <p className="text-xs text-muted-foreground">
                               No code suggestions produced for this task.
                             </p>
-                        )}
-
-                        {autoApply && (
-                          <div className="flex flex-col gap-2 rounded-md border border-border/60 p-3 text-xs">
-                            <div className="flex flex-wrap items-center justify-between gap-2">
-                              <span className="inline-flex items-center gap-2 font-medium">
-                                <GitPullRequest className="h-4 w-4 text-primary" />
-                                Auto-apply {autoApply.status === 'success' ? 'committed' : autoApply.status === 'failed' ? 'failed' : 'skipped'}
-                              </span>
-                              <Badge variant={autoApplyVariant}>{autoApply.status}</Badge>
-                            </div>
-                            <p className="text-muted-foreground">{autoApply.message}</p>
-                            {autoApply.commitUrl && (
-                              <a
-                                href={autoApply.commitUrl}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="inline-flex items-center gap-1 text-primary hover:underline"
-                              >
-                                View commit
-                                <ExternalLink className="h-3 w-3" />
-                              </a>
-                            )}
-                          </div>
-                        )}
+                        ) : null}
 
                         {task.errorMessage && (
                           <p className="text-xs text-destructive">Error: {task.errorMessage}</p>
