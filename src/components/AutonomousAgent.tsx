@@ -425,28 +425,35 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
   const [changePreview, setChangePreview] = useState<ChangePreviewState | null>(null);
   const trimmedToken = useMemo(() => token.trim(), [token]);
 
+  // Load saved GitHub connection from localStorage
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    const saved = window.localStorage.getItem(storageKey);
-    if (!saved) return;
 
     try {
+      const saved = window.localStorage.getItem(storageKey);
+      if (!saved) return;
+
       const parsed = JSON.parse(saved) as { repo: string; branch?: string };
       setRepoInput(parsed.repo ?? '');
       if (parsed.branch) {
         setBranch(parsed.branch);
       }
     } catch (error) {
-      console.warn('Failed to parse saved GitHub connection:', error);
+      console.warn('Failed to load saved GitHub connection:', error);
     }
   }, [storageKey]);
 
+  // Save GitHub connection to localStorage
   useEffect(() => {
     if (typeof window === 'undefined') return;
     if (!owner || !repo) return;
 
-    const payload = JSON.stringify({ repo: `${owner}/${repo}`, branch });
-    window.localStorage.setItem(storageKey, payload);
+    try {
+      const payload = JSON.stringify({ repo: `${owner}/${repo}`, branch });
+      window.localStorage.setItem(storageKey, payload);
+    } catch (error) {
+      console.warn('Failed to save GitHub connection to storage:', error);
+    }
   }, [branch, owner, repo, storageKey]);
 
   const logStatus = useCallback((message: string, level: StatusLevel = 'info') => {

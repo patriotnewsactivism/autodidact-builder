@@ -26,8 +26,13 @@ const resolveStoredTheme = (storageKey: string, fallback: Theme) => {
   if (!isBrowser) {
     return fallback;
   }
-  const stored = window.localStorage.getItem(storageKey) as Theme | null;
-  return stored ?? fallback;
+  try {
+    const stored = window.localStorage.getItem(storageKey) as Theme | null;
+    return stored ?? fallback;
+  } catch (error) {
+    console.warn('Failed to load theme from storage:', error);
+    return fallback;
+  }
 };
 
 const getSystemTheme = (): Exclude<Theme, "system"> => {
@@ -57,7 +62,11 @@ export function ThemeProvider({
 
   const setTheme = (next: Theme) => {
     if (isBrowser) {
-      window.localStorage.setItem(storageKey, next);
+      try {
+        window.localStorage.setItem(storageKey, next);
+      } catch (error) {
+        console.warn('Failed to save theme to storage:', error);
+      }
     }
     setThemeState(next);
   };
