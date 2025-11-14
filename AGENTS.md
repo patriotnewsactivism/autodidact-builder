@@ -21,6 +21,11 @@
 - Mock Supabase/GitHub clients through dependency injection; no live network calls in CI.
 - Cover user-visible flows (auth, repo sync, diff viewer) rather than implementation details; blockers must include failing test references.
 
+## Auth & Theme Hooks
+- Consume auth state via `src/auth/useAuth` instead of reaching into the provider directly; the hook exposes `{ session, user, loading, error }` and should be called inside React trees wrapped by `AuthProvider`.
+- Theme state lives in `src/hooks/useTheme`; call `const { theme, setTheme } = useTheme()` from client components and rely on `ThemeProvider` for persistence (localStorage key `ai-theme`).
+- Keep provider logic (session bootstrapping, theme storage) inside `AuthProvider`/`ThemeProvider`; shared context types live in `src/auth/auth-context.ts` and `src/components/theme-context.ts` for reuse across UI packages.
+
 ## Commit & Pull Request Guidelines
 - Match current history: short imperative subjects (`Add GitHub OAuth login`) with optional wrapped body paragraphs referencing issue IDs when relevant.
 - Squash noisy WIP commits locally; keep Supabase migrations and app code in the same PR when they depend on each other.
