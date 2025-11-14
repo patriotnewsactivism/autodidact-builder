@@ -14,3 +14,9 @@ verify_jwt = false
 
 [functions.search-codebase]
 verify_jwt = false
+
+[functions.resolve-conflicts]
+verify_jwt = false
+
+[functions.self-heal-code]
+verify_jwt = false
