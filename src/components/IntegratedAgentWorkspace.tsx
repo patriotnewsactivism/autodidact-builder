@@ -58,9 +58,9 @@ interface FileDiff {
 }
 
 export function IntegratedAgentWorkspace() {
-  const { user } = useAuth();
+  const { user, session } = useAuth();
   const { toast } = useToast();
-  const { token, saveToken, isLoading: tokenLoading } = useSecureGithubToken();
+  const { token, persistToken, isLoading: tokenLoading } = useSecureGithubToken(session);
   const {
     activities,
     stats,
@@ -220,7 +220,7 @@ export function IntegratedAgentWorkspace() {
         linesChanged: stats.linesChanged || 0,
         filesChanged: (metadata.generatedChanges as any[] || []).length,
         estimatedTimeRemaining: task.status === 'completed' ? 0 : run.estimatedTimeRemaining,
-        changes: metadata.generatedChanges || [],
+        changes: (metadata.generatedChanges as any[] || []) as any[],
       };
     }));
 
@@ -318,7 +318,7 @@ export function IntegratedAgentWorkspace() {
                       type="password"
                       placeholder="ghp_..."
                       value={token}
-                      onChange={(e) => saveToken(e.target.value)}
+                      onChange={(e) => persistToken(e.target.value)}
                       className="bg-slate-800 border-slate-700 text-white"
                     />
                     <Button
@@ -342,7 +342,10 @@ export function IntegratedAgentWorkspace() {
         {/* Main Workspace */}
         {isConnected ? (
           <div className="flex-1 overflow-hidden">
-            <ModernAgentWorkspace onExecuteTask={handleExecuteTask} />
+            <ModernAgentWorkspace 
+              repoInfo={repoInfo}
+              token={token}
+            />
           </div>
         ) : (
           <div className="flex-1 flex items-center justify-center">
