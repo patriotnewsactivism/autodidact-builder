@@ -25,6 +25,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { cn } from '@/lib/utils';
+import { useModernAgentExecution } from '@/hooks/useModernAgentExecution';
+import { LiveCodePreview } from '@/components/LiveCodePreview';
 
 interface FileChange {
   path: string;
@@ -54,16 +56,17 @@ interface AgentRun {
 }
 
 interface ModernAgentWorkspaceProps {
-  onExecuteTask?: (instruction: string, agentCount: number) => Promise<void>;
+  repoInfo?: { owner: string; name: string; branch: string };
+  token?: string;
 }
 
-export function ModernAgentWorkspace({ onExecuteTask }: ModernAgentWorkspaceProps) {
-  const [runs, setRuns] = useState<AgentRun[]>([]);
+export function ModernAgentWorkspace({ repoInfo, token }: ModernAgentWorkspaceProps) {
+  const { runs, isExecuting, executeTask, clearRuns, estimateCost, estimateTime } = useModernAgentExecution();
   const [activeTab, setActiveTab] = useState<'code' | 'preview' | 'diff' | 'stats'>('code');
-  const [previewUrl, setPreviewUrl] = useState<string>('');
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [agentCount, setAgentCount] = useState(1);
   const [instruction, setInstruction] = useState('');
+  const [previewCode, setPreviewCode] = useState<string>('');
 
   // Calculate aggregate stats
   const aggregateStats = useMemo(() => {
@@ -106,32 +109,27 @@ export function ModernAgentWorkspace({ onExecuteTask }: ModernAgentWorkspaceProp
     return `$${cost.toFixed(4)}`;
   };
 
-  const handleStartTask = async () => {
-    if (!instruction.trim()) return;
-
-    // Create agent runs
-    const newRuns: AgentRun[] = Array.from({ length: agentCount }, (_, i) => ({
-      id: `agent-${Date.now()}-${i}`,
-      agentId: `Agent ${i + 1}`,
-      status: 'running',
-      progress: 0,
-      currentStep: 'Initializing...',
-      filesChanged: 0,
-      linesChanged: 0,
-      linesAdded: 0,
-      linesRemoved: 0,
-      startTime: new Date(),
-      estimatedTimeRemaining: 120, // 2 minutes default
-      estimatedCost: 0.15 * (1 + Math.random() * 0.3), // $0.15 - $0.20 per agent
-      changes: [],
-    }));
-
-    setRuns(prev => [...prev, ...newRuns]);
-
-    // Execute task
-    if (onExecuteTask) {
-      await onExecuteTask(instruction, agentCount);
+  // Update preview when changes come in
+  useEffect(() => {
+    const completedRuns = runs.filter(r => r.status === 'completed');
+    if (completedRuns.length > 0) {
+      // Get the latest completed change
+      const latestRun = completedRuns[completedRuns.length - 1];
+      const changes = latestRun.changes || [];
+      if (changes.length > 0) {
+        const firstChange = changes[0];
+        if (firstChange.new_content) {
+          setPreviewCode(firstChange.new_content);
+        }
+      }
     }
+  }, [runs]);
+
+  const handleStartTask = async () => {
+    if (!instruction.trim() || isExecuting) return;
+    
+    await executeTask(instruction, agentCount, repoInfo, token);
+    setInstruction('');
   };
 
   return (
@@ -215,11 +213,20 @@ export function ModernAgentWorkspace({ onExecuteTask }: ModernAgentWorkspaceProp
               </div>
               <Button
                 onClick={handleStartTask}
-                disabled={!instruction.trim() || aggregateStats.runningAgents > 0}
+                disabled={!instruction.trim() || isExecuting}
                 className="bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white font-medium"
               >
-                <Play className="h-4 w-4 mr-2" />
-                Start Coding
+                {isExecuting ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Processing...
+                  </>
+                ) : (
+                  <>
+                    <Play className="h-4 w-4 mr-2" />
+                    Start Coding
+                  </>
+                )}
               </Button>
             </div>
           </div>
@@ -412,35 +419,8 @@ export function ModernAgentWorkspace({ onExecuteTask }: ModernAgentWorkspaceProp
         </div>
 
         {/* Right Panel - Preview */}
-        <div className="flex-1 flex flex-col bg-white">
-          <div className="flex items-center justify-between px-4 py-2 border-b bg-slate-50">
-            <div className="flex items-center gap-2">
-              <Eye className="h-4 w-4 text-slate-600" />
-              <span className="text-sm font-medium text-slate-700">Live Preview</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <Button size="sm" variant="ghost">
-                <RotateCcw className="h-4 w-4" />
-              </Button>
-            </div>
-          </div>
-          <div className="flex-1 bg-white overflow-hidden">
-            {previewUrl ? (
-              <iframe
-                src={previewUrl}
-                className="w-full h-full border-0"
-                sandbox="allow-scripts allow-same-origin"
-                title="Code Preview"
-              />
-            ) : (
-              <div className="flex items-center justify-center h-full text-slate-400">
-                <div className="text-center">
-                  <Eye className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                  <p className="text-sm">Preview will appear here when code is generated</p>
-                </div>
-              </div>
-            )}
-          </div>
+        <div className="flex-1">
+          <LiveCodePreview code={previewCode} language="tsx" />
         </div>
       </div>
     </div>

@@ -86,7 +86,7 @@ class GitHubRequestError extends Error {
       cause?: unknown;
     }
   ) {
-    super(message, details.cause ? { cause: details.cause } : undefined);
+    super(message);
     this.name = 'GitHubRequestError';
     this.status = details.status;
     this.code = details.code;
@@ -207,8 +207,8 @@ interface AgentGeneratedChange {
 }
 
 interface AutoApplyResult {
-  attempted: boolean;
-  success: boolean;
+  attempted?: boolean;
+  success?: boolean;
   commitSha?: string;
   error?: string;
   filesChanged?: string[];
@@ -222,13 +222,13 @@ interface AgentTaskRecord {
   errorMessage?: string | null;
   metadata: {
     repo?: {
-      owner: string;
-      name: string;
-      branch: string;
+      owner?: string;
+      name?: string;
+      branch?: string;
     };
     files?: {
-      path: string;
-      content: string;
+      path?: string;
+      content?: string;
       sha?: string | null;
     }[];
     additionalContext?: string;
@@ -245,10 +245,14 @@ interface AgentTaskRecord {
     generatedChanges?: AgentGeneratedChange[];
     stats?: {
       linesChanged?: number;
+      linesAdded?: number;
+      linesRemoved?: number;
       stepsExecuted?: number;
       changesProposed?: number;
+      model?: string;
     };
     autoApplyResult?: AutoApplyResult;
+    githubTokenUsed?: boolean;
   };
   startedAt?: Date | null;
   completedAt?: Date | null;
@@ -424,6 +428,7 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
   const [appliedChanges, setAppliedChanges] = useState<Set<string>>(new Set());
   const [changePreview, setChangePreview] = useState<ChangePreviewState | null>(null);
   const trimmedToken = useMemo(() => token.trim(), [token]);
+  const hasWriteAccess = useMemo(() => Boolean(repoInfo?.permissions?.push), [repoInfo]);
 
   // Load saved GitHub connection from localStorage
   useEffect(() => {
@@ -1663,7 +1668,6 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
   }, [applyGeneratedChange, changePreview, toast]);
 
   const isConnected = connectionState === 'connected' && !!repoInfo;
-  const hasWriteAccess = Boolean(repoInfo?.permissions?.push);
   const canCommit = hasWriteAccess && Boolean(trimmedToken);
   const isDirty = selectedFile ? selectedFile.content !== selectedFile.originalContent : false;
   const sortedContents = useMemo(() => contents, [contents]);

@@ -59,24 +59,24 @@ interface Stats {
 }
 
 interface AutoApplyResult {
-  attempted: boolean;
-  success: boolean;
+  attempted?: boolean;
+  success?: boolean;
   commitSha?: string;
   error?: string;
   filesChanged?: string[];
 }
 
 interface AgentTaskFileContext {
-  path: string;
-  content: string;
+  path?: string;
+  content?: string;
   sha?: string | null;
 }
 
 interface AgentTaskMetadata {
   repo?: {
-    owner: string;
-    name: string;
-    branch: string;
+    owner?: string;
+    name?: string;
+    branch?: string;
   };
   files?: AgentTaskFileContext[];
   additionalContext?: string;
@@ -356,7 +356,7 @@ export const useAgentData = (userId: string | undefined) => {
             user_id: userId,
             instruction,
             status: 'pending',
-            metadata: validatedMetadata,
+            metadata: validatedMetadata as any,
           }])
           .select()
           .single();
