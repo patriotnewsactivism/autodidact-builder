@@ -8,7 +8,7 @@ import { Brain, Sparkles, Github, Loader2 } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { useAuth } from '@/auth/AuthProvider';
+import { useAuth } from '@/auth/useAuth';
 import { MISCONFIGURED_AUTH_MESSAGE, normaliseAuthError } from '@/auth/auth-errors';
 
 export const Auth = () => {

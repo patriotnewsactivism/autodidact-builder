@@ -27,16 +27,7 @@ import { Separator } from '@/components/ui/separator';
 import { cn } from '@/lib/utils';
 import { useModernAgentExecution } from '@/hooks/useModernAgentExecution';
 import { LiveCodePreview } from '@/components/LiveCodePreview';
-
-interface FileChange {
-  path: string;
-  action: 'create' | 'update' | 'delete';
-  linesAdded: number;
-  linesRemoved: number;
-  language: string;
-  diff?: string;
-  newContent?: string;
-}
+import type { AgentGeneratedChange } from '@/types/agent';
 
 interface AgentRun {
   id: string;
@@ -52,7 +43,7 @@ interface AgentRun {
   estimatedTimeRemaining?: number;
   estimatedCost?: number;
   actualCost?: number;
-  changes: FileChange[];
+  changes: AgentGeneratedChange[];
 }
 
 interface ModernAgentWorkspaceProps {
@@ -67,6 +58,12 @@ export function ModernAgentWorkspace({ repoInfo, token }: ModernAgentWorkspacePr
   const [agentCount, setAgentCount] = useState(1);
   const [instruction, setInstruction] = useState('');
   const [previewCode, setPreviewCode] = useState<string>('');
+
+  const handleTabChange = (value: string) => {
+    if (value === 'code' || value === 'preview' || value === 'diff' || value === 'stats') {
+      setActiveTab(value);
+    }
+  };
 
   // Calculate aggregate stats
   const aggregateStats = useMemo(() => {
@@ -118,8 +115,9 @@ export function ModernAgentWorkspace({ repoInfo, token }: ModernAgentWorkspacePr
       const changes = latestRun.changes || [];
       if (changes.length > 0) {
         const firstChange = changes[0];
-        if (firstChange.new_content) {
-          setPreviewCode(firstChange.new_content);
+        const nextPreview = firstChange.new_content ?? firstChange.newContent;
+        if (nextPreview) {
+          setPreviewCode(nextPreview);
         }
       }
     }
@@ -260,7 +258,7 @@ export function ModernAgentWorkspace({ repoInfo, token }: ModernAgentWorkspacePr
           "flex flex-col border-r border-slate-800 bg-slate-900/30",
           isFullscreen ? "w-1/3" : "w-1/2"
         )}>
-          <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as any)} className="flex-1 flex flex-col">
+          <Tabs value={activeTab} onValueChange={handleTabChange} className="flex-1 flex flex-col">
             <TabsList className="w-full justify-start border-b border-slate-800 bg-transparent rounded-none h-auto p-0">
               <TabsTrigger value="code" className="rounded-none border-b-2 border-transparent data-[state=active]:border-purple-500 data-[state=active]:bg-transparent">
                 <Code2 className="h-4 w-4 mr-2" />
@@ -354,7 +352,7 @@ export function ModernAgentWorkspace({ repoInfo, token }: ModernAgentWorkspacePr
                   <ScrollArea className="h-full">
                     <div className="p-4 space-y-4">
                       {runs.flatMap(run =>
-                        run.changes.map((change: any, idx: number) => (
+                        run.changes.map((change, idx: number) => (
                           <div key={`${run.id}-${idx}`} className="border border-slate-700 rounded-lg overflow-hidden bg-slate-800/30">
                             <div className="px-4 py-2 bg-slate-800/50 border-b border-slate-700 flex items-center justify-between">
                               <div className="flex items-center gap-2">

@@ -7,6 +7,15 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
+interface ResolveConflictsRequest {
+  conflictId: string;
+  conflictingFiles: string[];
+  diffContent: string;
+  repoOwner: string;
+  repoName: string;
+  branch: string;
+}
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
@@ -31,7 +40,14 @@ serve(async (req) => {
       throw new Error('Unauthorized');
     }
 
-    const { conflictId, conflictingFiles, diffContent, repoOwner, repoName, branch } = await req.json();
+    const {
+      conflictId,
+      conflictingFiles,
+      diffContent,
+      repoOwner,
+      repoName,
+      branch
+    } = (await req.json()) as ResolveConflictsRequest;
 
     console.log(`Resolving conflict for ${conflictingFiles.length} files`);
 
@@ -42,7 +58,7 @@ Repository: ${repoOwner}/${repoName}
 Branch: ${branch}
 
 Conflicting Files:
-${conflictingFiles.map((f: string) => `- ${f}`).join('\n')}
+${conflictingFiles.map((file) => `- ${file}`).join('\n')}
 
 Conflict Diff:
 \`\`\`
@@ -145,12 +161,13 @@ Output format (JSON):
       }
     );
 
-  } catch (error: any) {
+  } catch (error) {
     console.error('Error in resolve-conflicts:', error);
+    const message = error instanceof Error ? error.message : 'Unknown error';
     return new Response(
       JSON.stringify({ 
-        error: error.message,
-        details: error.toString()
+        error: message,
+        details: String(error)
       }),
       {
         status: 500,

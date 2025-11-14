@@ -15,6 +15,22 @@ export interface ConflictResolution {
   summary: string;
 }
 
+export interface ConflictResolutionTask {
+  id: string;
+  user_id: string;
+  task_id: string | null;
+  repo_owner: string;
+  repo_name: string;
+  branch: string;
+  conflicting_files: string[];
+  diff_content: string;
+  resolution_status: string;
+  resolved_content: ConflictResolution | null;
+  created_at: string;
+  resolved_at: string | null;
+  error_message: string | null;
+}
+
 /**
  * Detect if files have merge conflict markers
  */
@@ -81,7 +97,7 @@ export async function createConflictTask(
         repo_owner: repoOwner,
         repo_name: repoName,
         branch,
-        conflicting_files: conflictingFiles as any,
+        conflicting_files: conflictingFiles,
         diff_content: diffContent,
         resolution_status: 'pending',
       }])
@@ -138,7 +154,7 @@ export async function resolveConflicts(
 /**
  * Check for pending conflict tasks
  */
-export async function getPendingConflicts(): Promise<any[]> {
+export async function getPendingConflicts(): Promise<ConflictResolutionTask[]> {
   try {
     const { data, error } = await supabase
       .from('conflict_resolution_tasks')
@@ -151,7 +167,7 @@ export async function getPendingConflicts(): Promise<any[]> {
       return [];
     }
 
-    return data || [];
+    return (data as ConflictResolutionTask[]) || [];
   } catch (error) {
     console.error('Error fetching pending conflicts:', error);
     return [];

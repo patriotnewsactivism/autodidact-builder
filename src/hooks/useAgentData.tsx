@@ -2,8 +2,26 @@ import { useCallback, useEffect, useState } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
 import { z } from 'zod';
+import type { AgentGeneratedChange } from '@/types/agent';
 
 // Zod schemas for runtime validation
+const AgentGeneratedChangeSchema = z.object({
+  path: z.string(),
+  action: z.enum(['update', 'create', 'delete']).optional(),
+  description: z.string().optional(),
+  language: z.string().optional(),
+  diff: z.string().optional(),
+  new_content: z.string().optional(),
+  newContent: z.string().optional(),
+  summary: z.string().optional(),
+  lineDelta: z.number().optional(),
+  previousContent: z.string().optional(),
+  stepId: z.string().optional(),
+  stepTitle: z.string().optional(),
+  linesAdded: z.number().optional(),
+  linesRemoved: z.number().optional(),
+}).passthrough();
+
 const AgentTaskFileContextSchema = z.object({
   path: z.string(),
   content: z.string(),
@@ -28,7 +46,7 @@ const AgentTaskMetadataSchema = z.object({
   additionalContext: z.string().optional(),
   autoApply: z.boolean().optional(),
   plan: z.unknown().optional(),
-  generatedChanges: z.unknown().optional(),
+  generatedChanges: z.array(AgentGeneratedChangeSchema).optional(),
   stats: z.object({
     linesChanged: z.number().optional(),
     linesAdded: z.number().optional(),
@@ -72,29 +90,9 @@ interface AgentTaskFileContext {
   sha?: string | null;
 }
 
-interface AgentTaskMetadata {
-  repo?: {
-    owner?: string;
-    name?: string;
-    branch?: string;
-  };
-  files?: AgentTaskFileContext[];
-  additionalContext?: string;
-  autoApply?: boolean;
-  plan?: unknown;
-  generatedChanges?: unknown;
-  stats?: {
-    linesChanged?: number;
-    linesAdded?: number;
-    linesRemoved?: number;
-    stepsExecuted?: number;
-    changesProposed?: number;
-    model?: string;
-  };
-  autoApplyResult?: AutoApplyResult;
-  githubTokenUsed?: boolean;
-  [key: string]: unknown;
-}
+type AgentTaskMetadata = Omit<z.infer<typeof AgentTaskMetadataSchema>, 'generatedChanges'> & {
+  generatedChanges?: AgentGeneratedChange[];
+};
 
 interface KnowledgeNode {
   id: string;
@@ -348,7 +346,7 @@ export const useAgentData = (userId: string | undefined) => {
         }
 
         // Validate metadata before inserting
-        const validatedMetadata = AgentTaskMetadataSchema.parse(metadata);
+        const validatedMetadata = AgentTaskMetadataSchema.parse(metadata) as AgentTaskMetadata;
 
         const { data: rows, error: taskError } = await supabase
           .from('tasks')
@@ -356,7 +354,7 @@ export const useAgentData = (userId: string | undefined) => {
             user_id: userId,
             instruction,
             status: 'pending',
-            metadata: validatedMetadata as any,
+            metadata: validatedMetadata,
           }])
           .select()
           .single();

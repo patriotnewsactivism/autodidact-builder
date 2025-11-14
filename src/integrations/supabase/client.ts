@@ -65,6 +65,8 @@ export const supabase = new Proxy({} as SupabaseClient<Database>, {
     if (!supabaseInstance) {
       supabaseInstance = getSupabaseClient();
     }
-    return (supabaseInstance as any)[prop];
+    const instance = supabaseInstance;
+    const value = instance[prop as keyof SupabaseClient<Database>];
+    return typeof value === 'function' ? value.bind(instance) : value;
   }
 });

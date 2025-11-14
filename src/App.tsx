@@ -8,7 +8,7 @@ import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-route
 import { ThemeProvider } from "@/components/theme-provider";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { Navigation } from "@/components/navigation";
-import { useAuth } from "@/auth/AuthProvider";
+import { useAuth } from "@/auth/useAuth";
 
 const Index = React.lazy(() => import("./pages/Index"));
 const AutonomousAgentPage = React.lazy(() => import("./pages/AutonomousAgent"));

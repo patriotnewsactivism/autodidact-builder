@@ -34,6 +34,8 @@ npm i
 # Step 4: Start the development server with auto-reloading and an instant preview.
 npm run dev
 
+Need deeper contributor guidance? Read the [Repository Guidelines](AGENTS.md) before opening a pull request.
+
 ## Configuring Supabase, GitHub and the model endpoint
 
 This project uses Supabase for authentication and storage, GitHub for repository access and a language‑model endpoint for code generation.  The sample `.env` included in this repository contains placeholder values; without valid keys the app will display a "wrong API key" error when you try to sign in or connect to a repository.  To run the agent autonomously you need to supply your own credentials and endpoints:

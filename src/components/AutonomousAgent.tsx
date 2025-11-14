@@ -44,10 +44,11 @@ import {
   X,
 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
-import { useAuth } from '@/auth/AuthProvider';
+import { useAuth } from '@/auth/useAuth';
 import { useAgentData } from '@/hooks/useAgentData';
 import { useSecureGithubToken } from '@/hooks/useSecureGithubToken';
 import { CodeDiff } from '@/components/CodeDiff';
+import type { AgentGeneratedChange } from '@/types/agent';
 
 const GITHUB_API_URL = 'https://api.github.com';
 const CONNECTION_STORAGE_KEY = 'autodidact-builder:github-connection';
@@ -191,19 +192,6 @@ interface SelectedFile {
 interface AgentWorkspaceProps {
   agentId: string;
   agentName: string;
-}
-
-interface AgentGeneratedChange {
-  path: string;
-  action: 'update' | 'create' | 'delete';
-  description?: string;
-  language?: string;
-  new_content?: string;
-  summary?: string;
-  lineDelta?: number;
-  previousContent?: string;
-  stepId?: string;
-  stepTitle?: string;
 }
 
 interface AutoApplyResult {
@@ -1698,9 +1686,9 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
       ...t,
       metadata: {
         ...t.metadata,
-        generatedChanges: (t.metadata.generatedChanges as AgentGeneratedChange[] | undefined) ?? []
+        generatedChanges: t.metadata.generatedChanges ?? []
       }
-    })).slice(0, 8), 
+    })).slice(0, 8),
     [tasks]
   );
   const hasWorkspaceChanges = useMemo(
@@ -2214,7 +2202,7 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
                         : task.status === 'failed'
                         ? 'destructive'
                         : 'secondary';
-                    const changes = (task.metadata.generatedChanges ?? []) as AgentGeneratedChange[];
+                    const changes = task.metadata.generatedChanges ?? [];
                     const autoApply = task.metadata.autoApplyResult as AutoApplyResult | undefined;
                     return (
                       <div key={task.id} className="space-y-3 rounded-lg border border-border/60 p-4">

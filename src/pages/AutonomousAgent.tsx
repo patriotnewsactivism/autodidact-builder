@@ -1,6 +1,6 @@
 import { IntegratedAgentWorkspace } from '@/components/IntegratedAgentWorkspace';
 import { Auth } from '@/components/Auth';
-import { useAuth } from '@/auth/AuthProvider';
+import { useAuth } from '@/auth/useAuth';
 import { Loader2 } from 'lucide-react';
 
 const AutonomousAgentPage = () => {

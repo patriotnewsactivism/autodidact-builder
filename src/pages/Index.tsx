@@ -1,6 +1,6 @@
 import { AutonomousAgent } from '@/components/AutonomousAgent';
 import { Auth } from '@/components/Auth';
-import { useAuth } from '@/auth/AuthProvider';
+import { useAuth } from '@/auth/useAuth';
 
 const Index = () => {
   const { user, loading } = useAuth();

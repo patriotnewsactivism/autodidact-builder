@@ -11,7 +11,7 @@
  */
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { useAuth } from '@/auth/AuthProvider';
+import { useAuth } from '@/auth/useAuth';
 import { useAgentData } from '@/hooks/useAgentData';
 import { useSecureGithubToken } from '@/hooks/useSecureGithubToken';
 import { ModernAgentWorkspace } from './ModernAgentWorkspace';
@@ -31,6 +31,7 @@ import {
   Loader2, RefreshCw, FileCode
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import type { AgentGeneratedChange } from '@/types/agent';
 
 interface AgentRun {
   id: string;
@@ -47,7 +48,7 @@ interface AgentRun {
   estimatedTimeRemaining: number;
   estimatedCost: number;
   actualCost?: number;
-  changes: any[];
+  changes: AgentGeneratedChange[];
 }
 
 interface FileDiff {
@@ -91,7 +92,7 @@ export function IntegratedAgentWorkspace() {
   // Parse repo URL
   const repoInfo = useMemo(() => {
     if (!repoUrl) return null;
-    const match = repoUrl.match(/github\.com\/([^\/]+)\/([^\/]+)/);
+    const match = repoUrl.match(/github\.com\/([^/]+)\/([^/]+)/);
     if (!match) return null;
     return {
       owner: match[1],
@@ -229,15 +230,15 @@ export function IntegratedAgentWorkspace() {
         linesAdded: stats.linesAdded || 0,
         linesRemoved: stats.linesRemoved || 0,
         linesChanged: stats.linesChanged || 0,
-        filesChanged: (metadata.generatedChanges as any[] || []).length,
+        filesChanged: (metadata.generatedChanges ?? []).length,
         estimatedTimeRemaining: task.status === 'completed' ? 0 : run.estimatedTimeRemaining,
-        changes: (metadata.generatedChanges as any[] || []) as any[],
+        changes: metadata.generatedChanges ?? [],
       };
     }));
 
     // Update diffs when changes are available
     tasks.forEach(task => {
-      const changes = (task.metadata?.generatedChanges || []) as any[];
+      const changes = task.metadata?.generatedChanges ?? [];
       if (changes.length > 0) {
         const newDiffs: FileDiff[] = changes.map(change => ({
           path: change.path,
@@ -462,7 +463,7 @@ export function IntegratedAgentWorkspace() {
               ? {
                   linesAdded: tasks[0].metadata.stats.linesAdded,
                   linesRemoved: tasks[0].metadata.stats.linesRemoved,
-                  filesModified: (tasks[0].metadata.generatedChanges as any[] || []).length,
+                  filesModified: (tasks[0].metadata.generatedChanges ?? []).length,
                   model: tasks[0].metadata.stats.model,
                 }
               : undefined

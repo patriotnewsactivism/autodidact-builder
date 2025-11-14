@@ -1,5 +1,18 @@
 // api/ollama.ts (Vercel) or /netlify/functions/ollama.ts (Netlify)
-export default async function handler(req: any, res: any) {
+
+interface ProxyRequest {
+  url: string;
+  method: string;
+  body?: unknown;
+}
+
+interface ProxyResponse {
+  status: (statusCode: number) => ProxyResponse;
+  setHeader: (name: string, value: string) => void;
+  send: (body: string) => void;
+}
+
+export default async function handler(req: ProxyRequest, res: ProxyResponse) {
   const base = process.env.OLLAMA_ENDPOINT!;
   const upstream = `${base}${req.url.replace(/^\/api\/ollama/, "")}`;
 
@@ -14,6 +27,6 @@ export default async function handler(req: any, res: any) {
   });
 
   res.status(r.status);
-  r.headers.forEach((v: string, k: string) => res.setHeader(k, v));
+  r.headers.forEach((value, key) => res.setHeader(key, value));
   res.send(await r.text());
 }

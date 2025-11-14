@@ -7,6 +7,21 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
+interface SelfHealRequestPayload {
+  filePath: string;
+  fileContent: string;
+  errors: LintErrorPayload[];
+  issueType: string;
+  repoContext?: string;
+}
+
+interface LintErrorPayload {
+  line?: number;
+  column?: number;
+  message: string;
+  rule?: string;
+}
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
@@ -30,20 +45,20 @@ serve(async (req) => {
       throw new Error('Unauthorized');
     }
 
-    const { 
-      filePath, 
-      fileContent, 
-      errors, 
+    const {
+      filePath,
+      fileContent,
+      errors,
       issueType,
-      repoContext 
-    } = await req.json();
+      repoContext
+    } = (await req.json()) as SelfHealRequestPayload;
 
     console.log(`Self-healing ${issueType} errors in ${filePath}`);
     console.log(`Errors to fix: ${errors.length}`);
 
     // Build comprehensive prompt
-    const errorList = errors.map((e: any) => 
-      `Line ${e.line || 'unknown'}: ${e.message} (${e.rule || 'unknown rule'})`
+    const errorList = errors.map((issue) => 
+      `Line ${issue.line ?? 'unknown'}: ${issue.message} (${issue.rule ?? 'unknown rule'})`
     ).join('\n');
 
     const prompt = `You are an expert TypeScript/JavaScript developer. Fix the following code quality issues.
@@ -112,7 +127,7 @@ Return ONLY the fixed code without explanations or markdown formatting.`;
     console.log('Generated fixed code, length:', fixedCode.length);
 
     // Mark issues as fixed in database
-    for (const error of errors) {
+    for (const issue of errors) {
       await supabase
         .from('code_quality_issues')
         .update({
@@ -122,8 +137,8 @@ Return ONLY the fixed code without explanations or markdown formatting.`;
         .match({
           user_id: user.id,
           file_path: filePath,
-          line_number: error.line,
-          message: error.message,
+          line_number: issue.line,
+          message: issue.message,
         });
     }
 
@@ -138,12 +153,13 @@ Return ONLY the fixed code without explanations or markdown formatting.`;
       }
     );
 
-  } catch (error: any) {
+  } catch (error) {
     console.error('Error in self-heal-code:', error);
+    const message = error instanceof Error ? error.message : 'Unknown error';
     return new Response(
       JSON.stringify({ 
-        error: error.message,
-        details: error.toString()
+        error: message,
+        details: String(error)
       }),
       {
         status: 500,

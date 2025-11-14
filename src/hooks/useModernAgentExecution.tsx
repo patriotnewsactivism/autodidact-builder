@@ -1,16 +1,7 @@
 import { useState, useCallback } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
-
-interface FileChange {
-  path: string;
-  action: 'create' | 'update' | 'delete';
-  linesAdded: number;
-  linesRemoved: number;
-  language: string;
-  diff?: string;
-  newContent?: string;
-}
+import type { AgentGeneratedChange } from '@/types/agent';
 
 interface AgentRun {
   id: string;
@@ -27,7 +18,7 @@ interface AgentRun {
   estimatedTimeRemaining?: number;
   estimatedCost: number;
   actualCost?: number;
-  changes: any[];
+  changes: AgentGeneratedChange[];
 }
 
 export function useModernAgentExecution() {
@@ -155,19 +146,19 @@ export function useModernAgentExecution() {
                   linesChanged: (taskData.stats?.linesAdded || 0) + (taskData.stats?.linesRemoved || 0),
                   actualCost: taskData.cost || run.estimatedCost,
                   estimatedTimeRemaining: 0,
-                  changes: taskData.changes || []
+                  changes: Array.isArray(taskData.changes) ? taskData.changes as AgentGeneratedChange[] : []
                 }
               : r
           ));
 
-        } catch (error: any) {
+        } catch (error) {
           console.error(`Agent ${index + 1} error:`, error);
           setRuns(prev => prev.map(r => 
             r.id === run.id 
               ? { 
                   ...r, 
                   status: 'error',
-                  currentStep: error.message || 'Failed',
+                  currentStep: error instanceof Error ? error.message : 'Failed',
                   estimatedTimeRemaining: 0
                 }
               : r
@@ -182,11 +173,11 @@ export function useModernAgentExecution() {
         description: `All ${agentCount} agents finished execution`
       });
 
-    } catch (error: any) {
+    } catch (error) {
       console.error('Execution error:', error);
       toast({
         title: 'Execution failed',
-        description: error.message,
+        description: error instanceof Error ? error.message : 'Unknown error occurred',
         variant: 'destructive'
       });
     } finally {

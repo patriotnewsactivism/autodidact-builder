@@ -17,6 +17,22 @@ export interface SelfHealingResult {
   error?: string;
 }
 
+export interface CodeQualityIssueRecord {
+  id: string;
+  user_id: string;
+  file_path: string;
+  issue_type: string;
+  severity: string;
+  line_number: number | null;
+  column_number: number | null;
+  message: string;
+  rule_name: string | null;
+  auto_fix_attempted: boolean;
+  fixed_at: string | null;
+  created_at: string;
+  metadata?: Record<string, unknown> | null;
+}
+
 /**
  * Parse TypeScript compiler errors
  */
@@ -147,12 +163,12 @@ export async function selfHealCode(
       fixedCode: data.fixedCode,
       errorsFixed: data.errorsFixed,
     };
-  } catch (error: any) {
+  } catch (error) {
     console.error('Error in self-heal:', error);
     return {
       success: false,
       errorsFixed: 0,
-      error: error.message,
+      error: error instanceof Error ? error.message : 'Unknown error',
     };
   }
 }
@@ -160,7 +176,7 @@ export async function selfHealCode(
 /**
  * Get unfixed quality issues
  */
-export async function getUnfixedIssues(): Promise<any[]> {
+export async function getUnfixedIssues(): Promise<CodeQualityIssueRecord[]> {
   try {
     const { data, error } = await supabase
       .from('code_quality_issues')
@@ -175,7 +191,7 @@ export async function getUnfixedIssues(): Promise<any[]> {
       return [];
     }
 
-    return data || [];
+    return (data as CodeQualityIssueRecord[]) || [];
   } catch (error) {
     console.error('Error fetching unfixed issues:', error);
     return [];

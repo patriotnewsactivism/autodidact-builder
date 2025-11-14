@@ -1,6 +1,4 @@
 import {
-  createContext,
-  useContext,
   useEffect,
   useMemo,
   useState,
@@ -9,20 +7,7 @@ import {
 import type { Session } from '@supabase/supabase-js';
 import { supabase } from '@/integrations/supabase/client';
 import { createAuthErrorState, type AuthErrorState } from '@/auth/auth-errors';
-
-type AuthCtx = {
-  session: Session | null;
-  user: Session['user'] | null;
-  loading: boolean;
-  error: AuthErrorState | null;
-};
-
-const AuthContext = createContext<AuthCtx>({
-  session: null,
-  user: null,
-  loading: true,
-  error: null,
-});
+import { AuthContext } from '@/auth/auth-context';
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
@@ -88,5 +73,3 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
-
-export const useAuth = () => useContext(AuthContext);
