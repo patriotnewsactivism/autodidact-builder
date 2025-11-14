@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Brain, Sparkles } from 'lucide-react';
+import { Brain, Sparkles, Github, Loader2 } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
@@ -16,6 +16,7 @@ export const Auth = () => {
   const [password, setPassword] = useState('');
   const [signInLoading, setSignInLoading] = useState(false);
   const [signUpLoading, setSignUpLoading] = useState(false);
+  const [githubLoading, setGithubLoading] = useState(false);
   const [formErrors, setFormErrors] = useState<{ signin?: string; signup?: string }>({});
   const { toast } = useToast();
   const { error: authErrorFromContext } = useAuth();
@@ -92,9 +93,33 @@ export const Auth = () => {
   };
 
   const disableAuthInputs = useMemo(
-    () => signInLoading || signUpLoading || Boolean(authErrorFromContext?.misconfigured),
-    [signInLoading, signUpLoading, authErrorFromContext]
+    () => signInLoading || signUpLoading || githubLoading || Boolean(authErrorFromContext?.misconfigured),
+    [signInLoading, signUpLoading, githubLoading, authErrorFromContext]
   );
+
+  const handleGithubLogin = useCallback(async () => {
+    resetFormError('signin');
+    resetFormError('signup');
+    setGithubLoading(true);
+
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'github',
+        options: {
+          scopes: 'repo workflow read:user user:email',
+          redirectTo: `${window.location.origin}/agent`,
+        },
+      });
+
+      if (error) {
+        handleAuthError('signin', error);
+      }
+    } catch (error) {
+      handleAuthError('signin', error);
+    } finally {
+      setGithubLoading(false);
+    }
+  }, [handleAuthError, resetFormError]);
 
   const authErrorMessage = useMemo(() => {
     if (!authErrorFromContext) {
@@ -130,6 +155,26 @@ export const Auth = () => {
             <AlertDescription>{authErrorMessage}</AlertDescription>
           </Alert>
         )}
+
+        <div className="space-y-3 mb-6">
+          <Button
+            type="button"
+            variant="outline"
+            className="w-full flex items-center justify-center gap-2"
+            onClick={handleGithubLogin}
+            disabled={disableAuthInputs}
+          >
+            {githubLoading ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Github className="h-4 w-4" />
+            )}
+            {githubLoading ? 'Connecting to GitHub…' : 'Continue with GitHub'}
+          </Button>
+          <p className="text-xs text-muted-foreground text-center">
+            One-click GitHub login securely shares your OAuth token with the builder.
+          </p>
+        </div>
 
         <Tabs defaultValue="signin" className="w-full">
           <TabsList className="grid w-full grid-cols-2 glass">

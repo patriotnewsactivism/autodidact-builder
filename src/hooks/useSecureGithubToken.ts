@@ -77,6 +77,8 @@ interface SecureTokenState {
   persistToken: (value?: string) => Promise<boolean>;
   clearToken: () => void;
   storageAvailable: boolean;
+  providerToken: string | null;
+  syncProviderToken: () => Promise<boolean>;
 }
 
 export const useSecureGithubToken = (session: Session | null): SecureTokenState => {
@@ -86,6 +88,7 @@ export const useSecureGithubToken = (session: Session | null): SecureTokenState 
   const [isSaving, setIsSaving] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [providerToken, setProviderToken] = useState<string | null>(null);
 
   const storageKey = useMemo(() => {
     if (!session?.user?.id) return null;
@@ -176,6 +179,23 @@ export const useSecureGithubToken = (session: Session | null): SecureTokenState 
     };
   }, [session?.access_token, storageAvailable, storageKey]);
 
+  useEffect(() => {
+    if (!session?.provider_token) {
+      setProviderToken(null);
+      return;
+    }
+
+    setProviderToken(session.provider_token);
+
+    setToken((current) => {
+      if (current || hasStoredToken) {
+        return current;
+      }
+      return session.provider_token ?? '';
+    });
+    setError(null);
+  }, [hasStoredToken, session?.provider_token]);
+
   const persistToken = useCallback(
     async (value?: string) => {
       if (!storageAvailable) {
@@ -231,6 +251,16 @@ export const useSecureGithubToken = (session: Session | null): SecureTokenState 
     setError(null);
   }, [storageAvailable, storageKey]);
 
+  const syncProviderToken = useCallback(async () => {
+    if (!session?.provider_token) {
+      setError('Sign in with GitHub to sync a token.');
+      return false;
+    }
+
+    setToken(session.provider_token);
+    return persistToken(session.provider_token);
+  }, [persistToken, session?.provider_token]);
+
   return {
     token,
     setToken,
@@ -242,5 +272,7 @@ export const useSecureGithubToken = (session: Session | null): SecureTokenState 
     persistToken,
     clearToken,
     storageAvailable,
+    providerToken,
+    syncProviderToken,
   };
 };
