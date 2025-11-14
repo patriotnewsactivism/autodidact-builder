@@ -1,4 +1,5 @@
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
 import { useState, useEffect, useRef } from 'react';
 import { Eye, RotateCcw, ExternalLink, AlertCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -106,6 +107,8 @@ function generatePreviewHTML(code: string, language: string): string {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Code Preview</title>
 =======
+=======
+>>>>>>> Stashed changes
 /**
  * LiveCodePreview - Sandboxed code execution and preview
  *
@@ -164,6 +167,9 @@ export function LiveCodePreview({
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<<<<<<< Updated upstream
+>>>>>>> Stashed changes
+=======
 >>>>>>> Stashed changes
   <style>
     * {
@@ -172,6 +178,7 @@ export function LiveCodePreview({
       box-sizing: border-box;
     }
     body {
+<<<<<<< Updated upstream
 <<<<<<< Updated upstream
       font-family: system-ui, -apple-system, sans-serif;
       line-height: 1.5;
@@ -226,6 +233,8 @@ function escapeHtml(text: string): string {
   div.textContent = text;
   return div.innerHTML;
 =======
+=======
+>>>>>>> Stashed changes
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       padding: 20px;
     }
@@ -455,5 +464,8 @@ function escapeHtml(text: string): string {
       </div>
     </div>
   );
+<<<<<<< Updated upstream
+>>>>>>> Stashed changes
+=======
 >>>>>>> Stashed changes
 }
