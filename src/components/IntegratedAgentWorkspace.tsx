@@ -60,7 +60,18 @@ interface FileDiff {
 export function IntegratedAgentWorkspace() {
   const { user, session } = useAuth();
   const { toast } = useToast();
-  const { token, persistToken, isLoading: tokenLoading } = useSecureGithubToken(session);
+  const {
+    token,
+    setToken,
+    persistToken,
+    isLoading: tokenLoading,
+    isSaving: tokenSaving,
+    lastUpdated: tokenLastUpdated,
+    error: tokenError,
+    hasStoredToken,
+    providerToken,
+    syncProviderToken,
+  } = useSecureGithubToken(session);
   const {
     activities,
     stats,
@@ -266,6 +277,39 @@ export function IntegratedAgentWorkspace() {
     });
   }, [repoUrl, token, repoInfo, toast]);
 
+  const handleTokenSave = useCallback(async () => {
+    const saved = await persistToken();
+    if (saved) {
+      toast({ title: 'Token saved securely', description: 'Your GitHub token is encrypted locally.' });
+    } else {
+      toast({
+        title: 'Token not saved',
+        description: 'Review the token error message and try again.',
+        variant: 'destructive',
+      });
+    }
+  }, [persistToken, toast]);
+
+  const handleSyncFromGithub = useCallback(async () => {
+    const synced = await syncProviderToken();
+    if (synced) {
+      toast({
+        title: 'GitHub login connected',
+        description: 'Using your GitHub OAuth token for agent operations.',
+      });
+    } else {
+      toast({
+        title: 'Unable to sync GitHub token',
+        description: 'Complete GitHub login to import your token automatically.',
+        variant: 'destructive',
+      });
+    }
+  }, [syncProviderToken, toast]);
+
+  const showProviderSync = Boolean(providerToken && !hasStoredToken);
+  const isTokenBusy = tokenLoading || tokenSaving;
+  const connectDisabled = !repoUrl || !token || tokenLoading;
+
   // Render workspace view
   if (activeView === 'workspace') {
     return (
@@ -310,29 +354,71 @@ export function IntegratedAgentWorkspace() {
 
                 <div className="space-y-2">
                   <Label htmlFor="github-token" className="text-slate-300">
-                    GitHub Personal Access Token
+                    GitHub Access Token
                   </Label>
+                  <div className="flex flex-col gap-2">
+                    <div className="flex flex-col md:flex-row gap-2">
+                      <Input
+                        id="github-token"
+                        type="password"
+                        placeholder="ghp_..."
+                        value={token}
+                        onChange={(e) => setToken(e.target.value)}
+                        className="bg-slate-800 border-slate-700 text-white"
+                        disabled={isTokenBusy}
+                      />
+                      <div className="flex gap-2">
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          onClick={handleTokenSave}
+                          disabled={!token || isTokenBusy}
+                          className="whitespace-nowrap"
+                        >
+                          {isTokenBusy ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            'Save token'
+                          )}
+                        </Button>
+                        {showProviderSync && (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            onClick={handleSyncFromGithub}
+                            disabled={isTokenBusy}
+                            className="whitespace-nowrap"
+                          >
+                            Sync GitHub login
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-3 text-xs text-slate-400">
+                      <span>
+                        Token needs <code className="px-1 py-0.5 bg-slate-800 rounded">repo</code> scope
+                      </span>
+                      {tokenLastUpdated && (
+                        <span>Saved {tokenLastUpdated.toLocaleString()}</span>
+                      )}
+                      {showProviderSync && (
+                        <Badge variant="outline" className="border-slate-600 text-slate-200">
+                          Using GitHub OAuth token
+                        </Badge>
+                      )}
+                    </div>
+                    {tokenError && <p className="text-xs text-destructive">{tokenError}</p>}
+                  </div>
                   <div className="flex gap-2">
-                    <Input
-                      id="github-token"
-                      type="password"
-                      placeholder="ghp_..."
-                      value={token}
-                      onChange={(e) => persistToken(e.target.value)}
-                      className="bg-slate-800 border-slate-700 text-white"
-                    />
                     <Button
                       onClick={handleConnect}
-                      disabled={!repoUrl || !token}
+                      disabled={connectDisabled}
                       className="bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600"
                     >
                       <Github className="h-4 w-4 mr-2" />
-                      Connect
+                      {connectDisabled && !repoUrl ? 'Enter repo URL' : 'Connect'}
                     </Button>
                   </div>
-                  <p className="text-xs text-slate-500">
-                    Token needs <code className="px-1 py-0.5 bg-slate-800 rounded">repo</code> scope
-                  </p>
                 </div>
               </div>
             </div>
