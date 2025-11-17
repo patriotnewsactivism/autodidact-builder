@@ -112,14 +112,25 @@ export const Auth = () => {
       });
 
       if (error) {
-        handleAuthError('signin', error);
+        // Check for GitHub OAuth not enabled error
+        if (error.message?.includes('provider is not enabled') ||
+            error.message?.includes('Unsupported provider')) {
+          toast({
+            title: 'GitHub OAuth Not Enabled',
+            description: 'GitHub OAuth is not configured in Supabase. Please enable it in your Supabase dashboard (Authentication → Providers → GitHub) or use email/password sign-in and enter a GitHub token manually.',
+            variant: 'destructive',
+            duration: 10000,
+          });
+        } else {
+          handleAuthError('signin', error);
+        }
       }
     } catch (error) {
       handleAuthError('signin', error);
     } finally {
       setGithubLoading(false);
     }
-  }, [handleAuthError, resetFormError]);
+  }, [handleAuthError, resetFormError, toast]);
 
   const authErrorMessage = useMemo(() => {
     if (!authErrorFromContext) {
