@@ -12,6 +12,7 @@ import { useAuth } from "@/auth/useAuth";
 
 const Index = React.lazy(() => import("./pages/Index"));
 const AutonomousAgentPage = React.lazy(() => import("./pages/AutonomousAgent"));
+const AutonomousRepositories = React.lazy(() => import("./pages/AutonomousRepositories"));
 const NotFound = React.lazy(() => import("./pages/NotFound"));
 
 const queryClient = new QueryClient({
@@ -136,6 +137,14 @@ const App: React.FC = () => {
                       element={
                         <ProtectedRoute requireAuth>
                           <AutonomousAgentPage />
+                        </ProtectedRoute>
+                      }
+                    />
+                    <Route
+                      path="/repositories"
+                      element={
+                        <ProtectedRoute requireAuth>
+                          <AutonomousRepositories />
                         </ProtectedRoute>
                       }
                     />
