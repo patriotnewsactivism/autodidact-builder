@@ -422,12 +422,38 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
   const [changePreview, setChangePreview] = useState<ChangePreviewState | null>(null);
 
   // Use OAuth token if available, otherwise fall back to manually entered token
+  // Priority: session.provider_token > database installation > manual token
   const trimmedToken = useMemo(() => {
+    // First check if we have a provider token in the session (GitHub OAuth)
+    if (session?.provider_token && session.user.app_metadata?.provider === 'github') {
+      return session.provider_token;
+    }
+    // Then check database installation
     if (installation?.access_token) {
       return installation.access_token;
     }
+    // Finally fall back to manual token
     return token.trim();
-  }, [installation?.access_token, token]);
+  }, [session?.provider_token, session?.user.app_metadata?.provider, installation?.access_token, token]);
+
+  // Check if we have GitHub OAuth active (from session OR database)
+  const isOAuthActive = useMemo(() => {
+    return Boolean(
+      (session?.provider_token && session.user.app_metadata?.provider === 'github') ||
+      hasGithubAuth
+    );
+  }, [session?.provider_token, session?.user.app_metadata?.provider, hasGithubAuth]);
+
+  // Get OAuth username from session or installation
+  const oauthUsername = useMemo(() => {
+    if (session?.user.app_metadata?.provider === 'github') {
+      return session.user.user_metadata?.user_name ||
+             session.user.user_metadata?.preferred_username ||
+             session.user.user_metadata?.name ||
+             installation?.github_username;
+    }
+    return installation?.github_username;
+  }, [session, installation?.github_username]);
 
   const hasWriteAccess = useMemo(() => Boolean(repoInfo?.permissions?.push), [repoInfo]);
 
@@ -1782,9 +1808,9 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
               <div className="space-y-2">
                 <div className="flex items-center justify-between gap-2">
                   <Label>GitHub Authentication</Label>
-                  {hasGithubAuth ? (
+                  {isOAuthActive ? (
                     <Badge variant="default" className="bg-green-600">
-                      OAuth Connected
+                      ✓ OAuth Connected
                     </Badge>
                   ) : (
                     <Badge variant={hasStoredToken ? 'secondary' : 'outline'}>
@@ -1792,17 +1818,19 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
                     </Badge>
                   )}
                 </div>
-                {hasGithubAuth ? (
+                {isOAuthActive ? (
                   <div className="flex flex-col gap-2 p-3 bg-green-50 dark:bg-green-950/20 border border-green-200 dark:border-green-800 rounded-md">
                     <div className="flex items-center gap-2 text-sm">
                       <CheckCircle className="h-4 w-4 text-green-600" />
                       <span className="font-medium">GitHub OAuth Active</span>
                     </div>
+                    {oauthUsername && (
+                      <p className="text-xs text-muted-foreground">
+                        Connected as <span className="font-medium">{oauthUsername}</span>
+                      </p>
+                    )}
                     <p className="text-xs text-muted-foreground">
-                      Connected as <span className="font-medium">{installation?.github_username}</span>
-                    </p>
-                    <p className="text-xs text-muted-foreground">
-                      Using OAuth token for all GitHub operations. No manual token entry needed!
+                      ✨ Using OAuth token automatically. No manual token entry needed!
                     </p>
                   </div>
                 ) : (
