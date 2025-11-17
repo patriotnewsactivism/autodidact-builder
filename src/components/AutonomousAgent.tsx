@@ -47,6 +47,7 @@ import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/auth/useAuth';
 import { useAgentData } from '@/hooks/useAgentData';
 import { useSecureGithubToken } from '@/hooks/useSecureGithubToken';
+import { useGithubOAuth } from '@/hooks/useGithubOAuth';
 import { CodeDiff } from '@/components/CodeDiff';
 import type { AgentGeneratedChange } from '@/types/agent';
 
@@ -374,6 +375,10 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
     clearToken,
     storageAvailable: tokenStorageAvailable,
   } = useSecureGithubToken(session);
+
+  // GitHub OAuth integration - automatically use OAuth token if available
+  const { installation, hasGithubAuth } = useGithubOAuth(session);
+
   const [tokenInput, setTokenInput] = useState('');
   const [repoInput, setRepoInput] = useState('');
   const [owner, setOwner] = useState('');
@@ -415,7 +420,15 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
   const [autoApplyResults, setAutoApplyResults] = useState(false);
   const [appliedChanges, setAppliedChanges] = useState<Set<string>>(new Set());
   const [changePreview, setChangePreview] = useState<ChangePreviewState | null>(null);
-  const trimmedToken = useMemo(() => token.trim(), [token]);
+
+  // Use OAuth token if available, otherwise fall back to manually entered token
+  const trimmedToken = useMemo(() => {
+    if (installation?.access_token) {
+      return installation.access_token;
+    }
+    return token.trim();
+  }, [installation?.access_token, token]);
+
   const hasWriteAccess = useMemo(() => Boolean(repoInfo?.permissions?.push), [repoInfo]);
 
   // Load saved GitHub connection from localStorage
@@ -1768,68 +1781,88 @@ const AgentWorkspace: React.FC<AgentWorkspaceProps> = ({ agentId, agentName }) =
               </div>
               <div className="space-y-2">
                 <div className="flex items-center justify-between gap-2">
-                  <Label htmlFor={`token-${agentId}`}>Personal access token</Label>
-                  <Badge variant={hasStoredToken ? 'secondary' : 'outline'}>
-                    {hasStoredToken ? 'Stored securely' : 'Not saved'}
-                  </Badge>
+                  <Label>GitHub Authentication</Label>
+                  {hasGithubAuth ? (
+                    <Badge variant="default" className="bg-green-600">
+                      OAuth Connected
+                    </Badge>
+                  ) : (
+                    <Badge variant={hasStoredToken ? 'secondary' : 'outline'}>
+                      {hasStoredToken ? 'Token Saved' : 'Not Connected'}
+                    </Badge>
+                  )}
                 </div>
-                <div className="flex flex-col gap-2">
-                  <div className="flex flex-col gap-2 sm:flex-row sm:items-start">
-                    <Input
-                      id={`token-${agentId}`}
-                      type="password"
-                      placeholder={hasStoredToken ? 'Token stored securely' : 'ghp_...'}
-                      value={tokenInput}
-                      onChange={handleTokenInputChange}
-                      autoComplete="off"
-                      className="sm:flex-1"
-                      disabled={isTokenLoading}
-                    />
-                    <div className="flex gap-2">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        onClick={handlePersistTokenClick}
-                        disabled={
-                          isTokenSaving || (!tokenInput.trim() && !trimmedToken)
-                        }
-                      >
-                        {isTokenSaving ? (
-                          <span className="inline-flex items-center gap-2">
-                            <Loader2 className="h-4 w-4 animate-spin" /> Saving…
-                          </span>
-                        ) : (
-                          'Save token'
-                        )}
-                      </Button>
-                      {hasStoredToken && (
+                {hasGithubAuth ? (
+                  <div className="flex flex-col gap-2 p-3 bg-green-50 dark:bg-green-950/20 border border-green-200 dark:border-green-800 rounded-md">
+                    <div className="flex items-center gap-2 text-sm">
+                      <CheckCircle className="h-4 w-4 text-green-600" />
+                      <span className="font-medium">GitHub OAuth Active</span>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Connected as <span className="font-medium">{installation?.github_username}</span>
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Using OAuth token for all GitHub operations. No manual token entry needed!
+                    </p>
+                  </div>
+                ) : (
+                  <div className="flex flex-col gap-2">
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-start">
+                      <Input
+                        id={`token-${agentId}`}
+                        type="password"
+                        placeholder={hasStoredToken ? 'Token stored securely' : 'ghp_...'}
+                        value={tokenInput}
+                        onChange={handleTokenInputChange}
+                        autoComplete="off"
+                        className="sm:flex-1"
+                        disabled={isTokenLoading}
+                      />
+                      <div className="flex gap-2">
                         <Button
                           type="button"
-                          variant="ghost"
-                          onClick={handleClearStoredToken}
-                          disabled={isTokenSaving}
+                          variant="outline"
+                          onClick={handlePersistTokenClick}
+                          disabled={
+                            isTokenSaving || (!tokenInput.trim() && !trimmedToken)
+                          }
                         >
-                          Clear
+                          {isTokenSaving ? (
+                            <span className="inline-flex items-center gap-2">
+                              <Loader2 className="h-4 w-4 animate-spin" /> Saving…
+                            </span>
+                          ) : (
+                            'Save token'
+                          )}
                         </Button>
-                      )}
+                        {hasStoredToken && (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            onClick={handleClearStoredToken}
+                            disabled={isTokenSaving}
+                          >
+                            Clear
+                          </Button>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                  <p className="text-xs text-muted-foreground">
-                    Provide a fine-grained PAT with <code>repo</code> scope for commits. Leave blank to browse
-                    repositories in read-only mode.
-                  </p>
-                  {tokenLastUpdated && (
                     <p className="text-xs text-muted-foreground">
-                      Last saved {formatDate(tokenLastUpdated)}
+                      <strong>Recommended:</strong> Sign in with GitHub OAuth (no manual tokens needed!) or provide a fine-grained PAT with <code>repo</code> scope.
                     </p>
-                  )}
-                  {tokenError && <p className="text-xs text-destructive">{tokenError}</p>}
-                  {!tokenStorageAvailable && (
-                    <p className="text-xs text-destructive">
-                      Secure browser storage is unavailable; tokens will be cleared when you reload.
-                    </p>
-                  )}
-                </div>
+                    {tokenLastUpdated && (
+                      <p className="text-xs text-muted-foreground">
+                        Last saved {formatDate(tokenLastUpdated)}
+                      </p>
+                    )}
+                    {tokenError && <p className="text-xs text-destructive">{tokenError}</p>}
+                    {!tokenStorageAvailable && (
+                      <p className="text-xs text-destructive">
+                        Secure browser storage is unavailable; tokens will be cleared when you reload.
+                      </p>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
 
