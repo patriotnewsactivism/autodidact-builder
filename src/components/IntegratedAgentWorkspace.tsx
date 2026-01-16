@@ -15,22 +15,16 @@ import { useAuth } from '@/auth/useAuth';
 import { useAgentData } from '@/hooks/useAgentData';
 import { useSecureGithubToken } from '@/hooks/useSecureGithubToken';
 import { ModernAgentWorkspace } from './ModernAgentWorkspace';
-import { RealTimeDiffViewer } from './RealTimeDiffViewer';
 import { EnhancedMetrics } from './EnhancedMetrics';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import { useToast } from '@/hooks/use-toast';
 import {
-  Settings, Github, Save, Play, Zap, Code2, Eye, GitCompare,
-  TrendingUp, Clock, DollarSign, Users, AlertCircle, CheckCircle,
-  Loader2, RefreshCw, FileCode
+  Settings, Github, Save, Loader2
 } from 'lucide-react';
-import { cn } from '@/lib/utils';
 import type { AgentGeneratedChange } from '@/types/agent';
 
 interface AgentRun {
@@ -216,7 +210,7 @@ export function IntegratedAgentWorkspace() {
 
       // Calculate actual stats from metadata
       const metadata = task.metadata || {};
-      const stats = metadata.stats || {};
+      const taskStats = metadata.stats || {};
 
       return {
         ...run,
@@ -227,9 +221,9 @@ export function IntegratedAgentWorkspace() {
         currentStep: task.status === 'processing' ? 'Executing...' :
                      task.status === 'completed' ? 'Completed' :
                      task.status === 'failed' ? 'Failed' : run.currentStep,
-        linesAdded: stats.linesAdded || 0,
-        linesRemoved: stats.linesRemoved || 0,
-        linesChanged: stats.linesChanged || 0,
+        linesAdded: taskStats.linesAdded ?? 0,
+        linesRemoved: taskStats.linesRemoved ?? 0,
+        linesChanged: taskStats.linesChanged ?? 0,
         filesChanged: (metadata.generatedChanges ?? []).length,
         estimatedTimeRemaining: task.status === 'completed' ? 0 : run.estimatedTimeRemaining,
         changes: metadata.generatedChanges ?? [],
@@ -243,7 +237,7 @@ export function IntegratedAgentWorkspace() {
         const newDiffs: FileDiff[] = changes.map(change => ({
           path: change.path,
           oldContent: '', // Would need to fetch from GitHub
-          newContent: change.new_content || '',
+          newContent: change.new_content || change.newContent || '',
           language: change.language,
         }));
         setDiffs(prev => [...prev, ...newDiffs]);
@@ -461,10 +455,10 @@ export function IntegratedAgentWorkspace() {
           currentTaskStats={
             tasks[0]?.metadata?.stats
               ? {
-                  linesAdded: tasks[0].metadata.stats.linesAdded,
-                  linesRemoved: tasks[0].metadata.stats.linesRemoved,
+                  linesAdded: tasks[0].metadata.stats.linesAdded ?? 0,
+                  linesRemoved: tasks[0].metadata.stats.linesRemoved ?? 0,
                   filesModified: (tasks[0].metadata.generatedChanges ?? []).length,
-                  model: tasks[0].metadata.stats.model,
+                  model: tasks[0].metadata.stats.model ?? 'unknown',
                 }
               : undefined
           }

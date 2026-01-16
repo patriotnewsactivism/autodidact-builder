@@ -7,7 +7,7 @@ import { useGithubOAuth } from '@/hooks/useGithubOAuth';
 import { ArrowLeft, Loader2, Github, AlertCircle } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
-export const AutonomousRepositories = () => {
+export default function AutonomousRepositories() {
   const { session, user } = useAuth();
   const { installation, isLoading, error, hasGithubAuth } = useGithubOAuth(session);
 
@@ -148,4 +148,4 @@ export const AutonomousRepositories = () => {
       </div>
     </div>
   );
-};
+}

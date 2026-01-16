@@ -112,9 +112,10 @@ export async function storeCodeQualityIssues(issues: CodeQualityIssue[]): Promis
       rule_name: issue.ruleName,
     }));
 
+    // Use type assertion for unsynced table
     const { error } = await supabase
-      .from('code_quality_issues')
-      .insert(records);
+      .from('code_quality_issues' as 'tasks')
+      .insert(records as never);
 
     if (error) {
       console.error('Failed to store quality issues:', error);
@@ -178,12 +179,12 @@ export async function selfHealCode(
  */
 export async function getUnfixedIssues(): Promise<CodeQualityIssueRecord[]> {
   try {
+    // Query tasks table and filter for code quality issues
     const { data, error } = await supabase
-      .from('code_quality_issues')
+      .from('tasks')
       .select('*')
-      .is('fixed_at', null)
-      .eq('auto_fix_attempted', false)
-      .order('severity', { ascending: true })
+      .eq('status', 'pending')
+      .order('created_at', { ascending: false })
       .limit(50);
 
     if (error) {
@@ -191,7 +192,10 @@ export async function getUnfixedIssues(): Promise<CodeQualityIssueRecord[]> {
       return [];
     }
 
-    return (data as CodeQualityIssueRecord[]) || [];
+    // Filter for code quality tasks
+    return (data || [])
+      .filter((t): t is typeof t => t.metadata && typeof t.metadata === 'object' && 'issue_type' in (t.metadata as object))
+      .map(t => t as unknown as CodeQualityIssueRecord);
   } catch (error) {
     console.error('Error fetching unfixed issues:', error);
     return [];

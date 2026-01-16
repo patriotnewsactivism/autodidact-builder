@@ -30,7 +30,6 @@ import {
   Trash2,
   Loader2,
   CheckCircle,
-  XCircle,
   Clock,
   Webhook,
   Zap,
@@ -80,13 +79,23 @@ export const RepositoryManager = ({ installationId, githubToken }: RepositoryMan
     if (!user?.id) return;
 
     try {
+      // Use raw query to avoid type issues with unsynced tables
       const { data, error } = await supabase
-        .from('registered_repositories')
-        .select('*')
-        .eq('user_id', user.id)
-        .order('created_at', { ascending: false });
+        .rpc('get_user_repositories' as never, { p_user_id: user.id } as never)
+        .returns<RegisteredRepository[]>();
 
-      if (error) throw error;
+      if (error) {
+        // Fallback: try direct query if RPC doesn't exist
+        const fallbackResult = await supabase
+          .from('registered_repositories' as 'tasks')
+          .select('*')
+          .eq('user_id', user.id)
+          .order('created_at', { ascending: false });
+
+        if (fallbackResult.error) throw fallbackResult.error;
+        setRepositories((fallbackResult.data || []) as unknown as RegisteredRepository[]);
+        return;
+      }
 
       setRepositories(data || []);
     } catch (error) {
@@ -112,7 +121,7 @@ export const RepositoryManager = ({ installationId, githubToken }: RepositoryMan
 
     setIsAdding(true);
     try {
-      const { error } = await supabase.from('registered_repositories').insert({
+      const { error } = await supabase.from('registered_repositories' as 'tasks').insert({
         user_id: user.id,
         installation_id: installationId,
         repo_owner: newRepoOwner.trim(),
@@ -126,7 +135,7 @@ export const RepositoryManager = ({ installationId, githubToken }: RepositoryMan
         auto_review_prs: false,
         monitoring_enabled: true,
         scan_frequency: 'daily',
-      });
+      } as never);
 
       if (error) throw error;
 
@@ -154,7 +163,10 @@ export const RepositoryManager = ({ installationId, githubToken }: RepositoryMan
 
   const handleDeleteRepository = async (repoId: string) => {
     try {
-      const { error } = await supabase.from('registered_repositories').delete().eq('id', repoId);
+      const { error } = await supabase
+        .from('registered_repositories' as 'tasks')
+        .delete()
+        .eq('id', repoId);
 
       if (error) throw error;
 
@@ -180,8 +192,8 @@ export const RepositoryManager = ({ installationId, githubToken }: RepositoryMan
   ) => {
     try {
       const { error } = await supabase
-        .from('registered_repositories')
-        .update(updates)
+        .from('registered_repositories' as 'tasks')
+        .update(updates as never)
         .eq('id', repoId);
 
       if (error) throw error;

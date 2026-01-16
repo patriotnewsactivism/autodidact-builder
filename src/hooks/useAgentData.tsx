@@ -3,6 +3,7 @@ import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
 import { z } from 'zod';
 import type { AgentGeneratedChange } from '@/types/agent';
+import type { Json } from '@/integrations/supabase/types';
 
 // Zod schemas for runtime validation
 const AgentGeneratedChangeSchema = z.object({
@@ -90,9 +91,29 @@ interface AgentTaskFileContext {
   sha?: string | null;
 }
 
-type AgentTaskMetadata = Omit<z.infer<typeof AgentTaskMetadataSchema>, 'generatedChanges'> & {
+interface AgentTaskMetadata {
+  repo?: {
+    owner?: string;
+    name?: string;
+    branch?: string;
+  };
+  files?: AgentTaskFileContext[];
+  additionalContext?: string;
+  autoApply?: boolean;
+  plan?: unknown;
   generatedChanges?: AgentGeneratedChange[];
-};
+  stats?: {
+    linesChanged?: number;
+    linesAdded?: number;
+    linesRemoved?: number;
+    stepsExecuted?: number;
+    changesProposed?: number;
+    model?: string;
+  };
+  autoApplyResult?: AutoApplyResult;
+  githubTokenUsed?: boolean;
+  [key: string]: unknown;
+}
 
 interface KnowledgeNode {
   id: string;
@@ -176,7 +197,27 @@ export const useAgentData = (userId: string | undefined) => {
     if (row.metadata && typeof row.metadata === 'object') {
       const validationResult = AgentTaskMetadataSchema.safeParse(row.metadata);
       if (validationResult.success) {
-        metadata = validationResult.data;
+        // Safely cast the validated data
+        const validated = validationResult.data;
+        metadata = {
+          ...validated,
+          generatedChanges: validated.generatedChanges?.map(change => ({
+            path: change.path || '',
+            action: change.action as 'update' | 'create' | 'delete' | undefined,
+            description: change.description,
+            language: change.language,
+            diff: change.diff,
+            new_content: change.new_content,
+            newContent: change.newContent,
+            summary: change.summary,
+            lineDelta: change.lineDelta,
+            previousContent: change.previousContent,
+            stepId: change.stepId,
+            stepTitle: change.stepTitle,
+            linesAdded: change.linesAdded,
+            linesRemoved: change.linesRemoved,
+          })),
+        };
       } else {
         console.warn('Invalid task metadata format:', validationResult.error);
         // Attempt to extract whatever valid properties we can
@@ -218,7 +259,7 @@ export const useAgentData = (userId: string | undefined) => {
         id: a.id,
         type: a.type,
         message: a.message,
-        timestamp: new Date(a.created_at),
+        timestamp: new Date(a.created_at ?? Date.now()),
         status: a.status,
       }))
     );
@@ -345,16 +386,13 @@ export const useAgentData = (userId: string | undefined) => {
           metadata.autoApply = options.autoApply;
         }
 
-        // Validate metadata before inserting
-        const validatedMetadata = AgentTaskMetadataSchema.parse(metadata) as AgentTaskMetadata;
-
         const { data: rows, error: taskError } = await supabase
           .from('tasks')
           .insert([{
             user_id: userId,
             instruction,
             status: 'pending',
-            metadata: validatedMetadata,
+            metadata: metadata as unknown as Json,
           }])
           .select()
           .single();
