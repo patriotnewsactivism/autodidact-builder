@@ -36,8 +36,9 @@ export const useGithubOAuth = (session: Session | null): UseGithubOAuthReturn =>
     }
 
     try {
+      // Use type assertion to work around unsynced types
       const { data, error: fetchError } = await supabase
-        .from('github_installations')
+        .from('github_installations' as 'tasks')
         .select('*')
         .eq('user_id', session.user.id)
         .order('created_at', { ascending: false })
@@ -48,7 +49,7 @@ export const useGithubOAuth = (session: Session | null): UseGithubOAuthReturn =>
         throw fetchError;
       }
 
-      setInstallation(data);
+      setInstallation(data as unknown as GitHubInstallation | null);
       setError(null);
     } catch (err) {
       console.error('Failed to fetch GitHub installation:', err);
@@ -82,9 +83,9 @@ export const useGithubOAuth = (session: Session | null): UseGithubOAuthReturn =>
         return;
       }
 
-      // Upsert GitHub installation
+      // Upsert GitHub installation using type assertion
       const { data, error: upsertError } = await supabase
-        .from('github_installations')
+        .from('github_installations' as 'tasks')
         .upsert(
           {
             user_id: session.user.id,
@@ -93,7 +94,7 @@ export const useGithubOAuth = (session: Session | null): UseGithubOAuthReturn =>
             access_token: session.provider_token,
             token_type: 'oauth',
             scope: session.user.app_metadata?.provider_scopes?.join(' ') || '',
-          },
+          } as never,
           {
             onConflict: 'user_id,github_user_id',
           }
@@ -105,7 +106,7 @@ export const useGithubOAuth = (session: Session | null): UseGithubOAuthReturn =>
         throw upsertError;
       }
 
-      setInstallation(data);
+      setInstallation(data as unknown as GitHubInstallation);
       setError(null);
     } catch (err) {
       console.error('Failed to save GitHub installation:', err);

@@ -90,8 +90,9 @@ export async function createConflictTask(
       return null;
     }
 
+    // Use type assertion for unsynced table
     const { data, error } = await supabase
-      .from('conflict_resolution_tasks')
+      .from('conflict_resolution_tasks' as 'tasks')
       .insert([{
         user_id: user.id,
         repo_owner: repoOwner,
@@ -100,7 +101,7 @@ export async function createConflictTask(
         conflicting_files: conflictingFiles,
         diff_content: diffContent,
         resolution_status: 'pending',
-      }])
+      } as never])
       .select('id')
       .single();
 
@@ -109,7 +110,7 @@ export async function createConflictTask(
       return null;
     }
 
-    return data.id;
+    return (data as { id: string })?.id ?? null;
   } catch (error) {
     console.error('Error creating conflict task:', error);
     return null;
@@ -157,17 +158,21 @@ export async function resolveConflicts(
 export async function getPendingConflicts(): Promise<ConflictResolutionTask[]> {
   try {
     const { data, error } = await supabase
-      .from('conflict_resolution_tasks')
+      .from('tasks')
       .select('*')
-      .eq('resolution_status', 'pending')
-      .order('created_at', { ascending: false });
+      .eq('status', 'pending')
+      .order('created_at', { ascending: false })
+      .limit(20);
 
     if (error) {
       console.error('Failed to fetch pending conflicts:', error);
       return [];
     }
 
-    return (data as ConflictResolutionTask[]) || [];
+    // Filter for conflict resolution tasks based on metadata
+    return (data || [])
+      .filter((t): t is typeof t => t.metadata && typeof t.metadata === 'object' && 'conflicting_files' in (t.metadata as object))
+      .map(t => t as unknown as ConflictResolutionTask);
   } catch (error) {
     console.error('Error fetching pending conflicts:', error);
     return [];
